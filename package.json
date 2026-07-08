@@ -1,0 +1,44 @@
+{
+  "name": "keyboard-a11y-tester",
+  "version": "0.1.0",
+  "description": "Keyboard-only web accessibility tester: drives a real browser keyboard-only and emits evidence-linked WCAG findings",
+  "license": "MIT",
+  "type": "module",
+  "author": "Everett Zufelt",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ezufelt/keyboard-a11y-tester.git"
+  },
+  "homepage": "https://github.com/ezufelt/keyboard-a11y-tester#readme",
+  "bugs": {
+    "url": "https://github.com/ezufelt/keyboard-a11y-tester/issues"
+  },
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag",
+    "keyboard",
+    "keyboard-navigation",
+    "focus",
+    "playwright",
+    "testing",
+    "claude",
+    "claude-code",
+    "agent-skill"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "keyboard-a11y-runner": "scripts/runner.mjs"
+  },
+  "scripts": {
+    "postinstall-browsers": "playwright install --with-deps chromium"
+  },
+  "dependencies": {
+    "pixelmatch": "^7.2.0",
+    "playwright": "^1.48.0",
+    "pngjs": "^7.0.0",
+    "yaml": "^2.5.0"
+  }
+}

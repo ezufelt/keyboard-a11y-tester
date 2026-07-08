@@ -1,0 +1,20 @@
+{
+  "name": "ezufelt",
+  "description": "Accessibility tooling as Claude Code plugins.",
+  "owner": {
+    "name": "Everett Zufelt"
+  },
+  "plugins": [
+    {
+      "name": "keyboard-a11y-tester",
+      "source": "./",
+      "description": "Drive a real browser keyboard-only to test whether a keyboard-only user can complete a task, and report evidence-linked WCAG findings.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Everett Zufelt"
+      },
+      "category": "development",
+      "homepage": "https://github.com/ezufelt/keyboard-a11y-tester#readme"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+# Optional test-case template. You do NOT need a YAML to use this skill — the usual
+# entry point is `serve --url <site> --goal "<task>"`. A YAML just lets you save a
+# reusable scenario. Copy this file, edit it, and pass its path to `serve` or the
+# batch crawl. Only the fields the runner reads are required (marked REQUIRED); the
+# rest are natural-language guidance for the agent's judgment layer.
+
+id: example-scenario                      # REQUIRED — used for the output subfolder name
+name: "Human-readable scenario name"
+
+target:
+  start_url: "https://example.com"        # REQUIRED — where the run begins
+  scope: same-origin
+
+# REQUIRED — one entry per breakpoint. The runner executes the scenario per viewport.
+viewports:
+  - { name: desktop, width: 1280, height: 800 }
+  - { name: mobile, width: 390, height: 844 }
+
+# The persona is always keyboard-only (W3C "Ade"); this text shapes AI judgment.
+persona:
+  type: keyboard_only
+  description: >
+    A keyboard-only visitor. Judge success from their point of view: can they complete
+    the goals below without a pointer, without getting lost or stuck?
+
+# REQUIRED — at least one goal with an `intent`. `intent` is the task in plain words;
+# `checks` are notes for the agent (an "ai:" prefix marks a judgment check).
+goals:
+  - id: do-the-task
+    intent: >
+      Describe, in natural language, what the keyboard user is trying to accomplish
+      (e.g. "find the pricing page", "apply the <X> filter and open the last result",
+      "complete and submit the contact form").
+    checks:
+      - control reachable and operable by keyboard          # 2.1.1
+      - no keyboard trap                                     # 2.1.2
+      - focus visible on every stop                          # 2.4.7
+      - "ai: focus order is logical vs the visual layout"    # 2.4.3
+      - "ai: the task can actually be completed keyboard-only"
+
+runtime:
+  disable_animations: true                # deterministic layout / pixel diffs
