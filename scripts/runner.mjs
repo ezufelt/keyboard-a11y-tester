@@ -33,7 +33,7 @@ const outRootFrom = (arg) => (arg ? path.resolve(arg) : DEFAULT_OUT_ROOT);
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { _: [], out: null, viewport: null, maxSteps: 150, press: null, type: null, port: null };
+  const args = { _: [], out: null, viewport: null, maxSteps: 150, press: null, type: null, port: null, storageState: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--out') args.out = argv[++i];
@@ -44,10 +44,27 @@ function parseArgs(argv) {
     else if (a === '--port') args.port = parseInt(argv[++i], 10);
     else if (a === '--url') args.url = argv[++i];
     else if (a === '--goal') args.goal = argv[++i];
+    else if (a === '--storage-state') args.storageState = argv[++i];
     else if (a === '-h' || a === '--help') args.help = true;
     else args._.push(a);
   }
   return args;
+}
+
+// Resolves --storage-state to an absolute path, failing fast if it is missing or
+// not valid JSON: a silently-ignored auth file would make the whole run test the
+// logged-out site while claiming to test the logged-in one.
+function resolveStorageState(arg) {
+  if (!arg) return null;
+  const p = path.resolve(arg);
+  if (!fs.existsSync(p)) { log(`Storage state file not found: ${p}`); process.exit(1); }
+  try {
+    JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (err) {
+    log(`Storage state file is not valid JSON: ${p}\n  ${err.message}`);
+    process.exit(1);
+  }
+  return p;
 }
 
 const USAGE = `
@@ -56,13 +73,20 @@ keyboard-a11y-runner — keyboard-only accessibility runner
 Output goes to a per-user temp dir by default (\${TMPDIR}/keyboard-a11y-tester); override
 with --out <dir>. Nothing is written into the project/skill directory.
 
+Authenticated runs: pass a Playwright storageState JSON file with --storage-state <file>
+to start the browser with its cookies and localStorage (e.g. an already-logged-in session).
+Generate one with \`context.storageState({ path: 'auth.json' })\` or \`npx playwright codegen
+--save-storage=auth.json <url>\`.
+
 Batch (blind Tab-crawl over the start page, per viewport):
-  node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) [--out <dir>] [--viewport <name>] [--max-steps <n>]
+  node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) [--out <dir>] [--viewport <name>] [--max-steps <n>] [--storage-state <file>]
 
 Live agentic session (the agent observes and decides each keystroke):
-  node scripts/runner.mjs serve  (--url <url> [--goal "<task>"] | <test-case.yaml>) [--viewport <name>] [--out <dir>] [--port <n>]
+  node scripts/runner.mjs serve  (--url <url> [--goal "<task>"] | <test-case.yaml>) [--viewport <name>] [--out <dir>] [--port <n>] [--storage-state <file>]
        → launches a persistent browser, navigates, prints the session dir. Keep running.
        → --url runs against any site ad-hoc (no YAML); --viewport desktop|mobile (default desktop).
+       → --storage-state applies once at launch; the session browser keeps the state alive
+         for every subsequent \`step\`.
   node scripts/runner.mjs observe <session-dir>
        → capture current focus state without a keystroke (initial observation).
   node scripts/runner.mjs step   <session-dir> (--press <Key> | --type <text>)
@@ -801,13 +825,14 @@ const DETERMINISM_CSS = `
   caret-color: transparent !important;
 }`;
 
-async function makeContext(browser, viewport, disableAnimations) {
+async function makeContext(browser, viewport, disableAnimations, storageState) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: 1,
     reducedMotion: 'reduce',
     isMobile: viewport.name === 'mobile',
     hasTouch: viewport.name === 'mobile',
+    ...(storageState ? { storageState } : {}),
     // Keyboard-only persona: no real mouse should ever be used. We simply never
     // call pointer APIs; there is no Playwright switch to hard-disable the mouse.
   });
@@ -923,7 +948,7 @@ async function ensureCaptchaCompat(context, page) {
 
 async function runViewport(browser, testCase, viewport, opts) {
   const disableAnimations = testCase.runtime?.disable_animations !== false;
-  const context = await makeContext(browser, viewport, disableAnimations);
+  const context = await makeContext(browser, viewport, disableAnimations, opts.storageState);
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send('DOM.enable');
@@ -1072,6 +1097,7 @@ async function cmdServe(args) {
   const testCase = args.url ? synthCase(args.url, args.goal) : loadCase(args._[1]);
   const vp = pickViewport(testCase, args.viewport);
   const port = args.port || 9333;
+  const storageState = resolveStorageState(args.storageState);
   const outRoot = outRootFrom(args.out);
   const dir = path.join(outRoot, testCase.id, `session-${vp.name}`);
   const paths = sessionPaths(dir);
@@ -1088,7 +1114,7 @@ async function cmdServe(args) {
   try { await verifyFocusVisibleModality(probe); } finally { await probe.close(); }
 
   const disableAnimations = testCase.runtime?.disable_animations !== false;
-  const context = await makeContext(browser, vp, disableAnimations);
+  const context = await makeContext(browser, vp, disableAnimations, storageState);
   const page = await context.newPage();
   await page.goto(testCase.target.start_url, { waitUntil: 'load', timeout: 60000 });
   await waitForReady(page);
@@ -1109,7 +1135,7 @@ async function cmdServe(args) {
   });
   writeJson(paths.stepsJson, []);
 
-  log(`  ✓ :focus-visible verified · navigated ${page.url()}`);
+  log(`  ✓ :focus-visible verified · navigated ${page.url()}` + (storageState ? ` · storage state loaded` : ''));
   process.stdout.write(`READY ${dir}\n`);
   // Stay alive until `stop` writes the STOP file (keeps the browser persistent).
   await new Promise((resolve) => {
@@ -1253,9 +1279,11 @@ async function main() {
   const outRoot = outRootFrom(args.out);
   const outDir = path.join(outRoot, testCase.id);
   ensureDir(outDir);
+  const storageState = resolveStorageState(args.storageState);
 
   log(`Test case: ${testCase.id}`);
   log(`Viewports: ${viewports.map((v) => v.name).join(', ')}`);
+  if (storageState) log(`Storage state: ${storageState}`);
 
   const browser = await chromium.launch({ channel: 'chromium', headless: true, args: CHROMIUM_ARGS });
 
@@ -1272,7 +1300,7 @@ async function main() {
 
     const summary = [];
     for (const vp of viewports) {
-      const r = await runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp });
+      const r = await runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState });
       summary.push(r);
     }
 
