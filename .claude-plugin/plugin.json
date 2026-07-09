@@ -6,9 +6,6 @@
     "name": "Everett Zufelt"
   },
   "homepage": "https://github.com/ezufelt/keyboard-a11y-tester#readme",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ezufelt/keyboard-a11y-tester.git"
-  },
+  "repository": "https://github.com/ezufelt/keyboard-a11y-tester.git",
   "license": "MIT"
 }
