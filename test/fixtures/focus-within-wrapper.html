@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: focus indicator on a :focus-within wrapper (expect visible, not a false 2.4.7)</title>
+<style>
+  /* Common custom-field pattern: the input itself carries no focus style --
+     the surrounding wrapper gets the border via :focus-within instead. */
+  .field-wrap {
+    display: inline-block;
+    padding: 16px;
+    border: 3px solid transparent;
+    border-radius: 6px;
+  }
+  .field-wrap:focus-within { border-color: #0969da; }
+  input { outline: none; border: 1px solid #ccc; padding: 6px; }
+</style>
+</head>
+<body>
+  <div class="field-wrap">
+    <label>Name <input type="text" id="wrapped"></label>
+  </div>
+</body>
+</html>

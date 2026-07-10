@@ -11,9 +11,9 @@ const TRACE_TOP_LEVEL_FIELDS = [
 ];
 const STEP_FIELDS = [
   'step_id', 'index', 'keystroke_sent', 'active_element_selector', 'tag', 'tabindex',
-  'dom_order_index', 'ax_name_role_state', 'focus_moved', 'bounding_box', 'url', 'text',
-  'is_body', 'computed_focus_style', 'region', 'focused_region_screenshot', 'focus_visible',
-  'sr_announcement',
+  'dom_order_index', 'ax_name_role_state', 'focus_moved', 'bounding_box', 'ancestor_boxes',
+  'url', 'text', 'is_body', 'computed_focus_style', 'region', 'focused_region_screenshot',
+  'focus_visible', 'sr_announcement',
 ];
 const FINDING_FIELDS = [
   'id', 'wcag', 'source', 'persona', 'evidence_kind', 'conformance_level', 'confidence',

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: page with an embedded iframe (expect each inner control tracked distinctly)</title>
+<style>a:focus, button:focus { outline: 3px solid #06c; }</style>
+</head>
+<body>
+  <a href="#before" id="before">Before iframe</a>
+  <iframe id="player" title="video player" src="iframe-inner.html" width="300" height="150"></iframe>
+  <a href="#after" id="after">After iframe</a>
+</body>
+</html>
