@@ -1,20 +1,23 @@
 # keyboard-a11y-tester
 
-An AI-assisted, **keyboard-only** web accessibility tester. It behaves like a person using
-only the keyboard, records what happens at every focus stop, and emits evidence-linked
-findings mapped to specific WCAG success criteria — against **any** website.
+An AI-assisted web accessibility tester that behaves like two W3C personas at once: a
+**keyboard-only** user ("Ade") and a **screen-reader** user ("Lakshmi"). It drives a page
+keyboard-only, records what happens at every focus stop, and emits evidence-linked
+findings mapped to specific WCAG success criteria — against **any** website. Both
+personas run in the same pass by default; a `--persona` flag restricts to just one.
 
 It has two layers:
 - a **deterministic runner** (`scripts/runner.mjs`) that owns the mechanical, reproducible
   work — driving the page keyboard-only, capturing a per-step trace + screenshots, and
-  computing the machine-decidable checks;
-- an **AI-judgment layer** — the invoking agent — that reads the trace/screenshots and
-  judges what rules can't (task completion, logical focus order, form quality). See
-  `SKILL.md` for how an agent drives it.
+  computing the machine-decidable checks for both personas;
+- an **AI-judgment layer** — the invoking agent — that reads the trace/screenshots/census
+  and judges what rules can't (task completion, logical focus/reading order, form
+  quality, announcement quality). See `SKILL.md` for how an agent drives it.
 
-Standalone and portable: it depends only on `playwright`, `yaml`, `pngjs`, and
-`pixelmatch`, needs no bundled test cases, and writes all output to a per-user **temp
-directory** (never into this folder).
+Standalone and portable: it depends only on `playwright`, `yaml`, `pngjs`, `pixelmatch`,
+and `@guidepup/virtual-screen-reader`, needs no bundled test cases, and writes all output
+to a per-user **temp directory** (never into this folder). The screen-reader persona
+never drives a real screen reader (NVDA/VoiceOver) — see "Screen-reader detection" below.
 
 ## Quick start
 
@@ -54,10 +57,18 @@ Then drive it directly (see [Run against any URL](#run-against-any-url-no-test-f
 | `pngjs` | ^7.0.0 | Decodes the per-step screenshots for pixel comparison |
 | `pixelmatch` | ^7.2.0 | Diffs focused vs. baseline frames to detect focus-indicator pixel changes |
 | `yaml` | ^2.5.0 | Parses saved scenario `*.test.yaml` files |
+| `@guidepup/virtual-screen-reader` | ^0.32.1 | Builds an ARIA/ACCNAME accessibility tree over the live page and emulates screen-reader announcements + live-region monitoring, for the screen-reader persona |
 
-There are **no runtime dependencies beyond these four** and no build step — the runner is
-plain `.mjs` executed directly by Node. Run `node scripts/setup-check.mjs` to verify both the
-npm deps and a working Chromium before your first run.
+There are **no runtime dependencies beyond these five** and no build step — the runner is
+plain `.mjs` executed directly by Node (the screen-reader library ships a pre-bundled
+browser ESM file, so no bundler was added). Run `node scripts/setup-check.mjs` to verify
+both the npm deps and a working Chromium before your first run.
+
+This project builds on [Guidepup](https://github.com/guidepup)'s
+[`@guidepup/virtual-screen-reader`](https://github.com/guidepup/virtual-screen-reader)
+(MIT license) for the screen-reader persona's accessible-name/role computation and
+live-region monitoring — credit to Craig Morten and the Guidepup project. See
+"Screen-reader detection (Lakshmi)" below for how it's used and its limitations.
 
 ## Setup
 
@@ -90,7 +101,8 @@ node scripts/runner.mjs stop    <session-dir>
 ```
 
 Options: `--out <dir>` (override the temp output root), `--viewport desktop|mobile`,
-`--max-steps <n>` (blind crawl), `--port <n>` (session). Keys:
+`--max-steps <n>` (blind crawl), `--port <n>` (session), `--persona keyboard|screen-reader|all`
+(default `all` — both personas in one pass). Keys:
 `Tab Shift+Tab Enter Space Escape ArrowUp ArrowDown ArrowLeft ArrowRight Home End`; text is
 entered with `--type` (real keyboard typing, never `.fill()`). Run each viewport separately.
 
@@ -109,27 +121,37 @@ Playwright (full Chromium, new-headless + SwiftShader for real pixels) drives th
 reachable by pointer, that is itself a finding. It drops to a raw CDP session for the
 accessibility tree (`Accessibility.getPartialAXTree`), the ground truth for name/role/state.
 At startup it **fails fast** if `:focus-visible` does not fire on CDP-driven key events
-(every focus-indicator check would otherwise be invalid).
+(every focus-indicator check would otherwise be invalid) — skipped entirely when
+`--persona screen-reader` is passed, since that persona has no pixel/focus-ring work.
 
-Checks are evaluated **per focus stop the persona actually visits** — this is *scenario*
+Checks are evaluated **per focus stop the persona actually visits** (keyboard persona) or
+against a page-wide structural census (screen-reader persona) — this is *scenario*
 testing, not an exhaustive page audit. Conformance target: **AA is pass/fail, AAA is
 informative.**
 
-| WCAG | Level | Check |
-|------|-------|-------|
-| 2.4.7 | AA | Focus indicator **present** — a declared `outline`/`box-shadow` in the computed style, or a pixel change on focus. (2.4.7 sets no size/contrast bar.) |
-| 2.4.13 | AAA (informative) | Focus indicator **strength** — changed area ≥ a 2px-thick perimeter **and** ≥ 3:1 focused/unfocused contrast. Advisory, never a fail. |
-| 1.4.1 | AA | Indicator is not colour-only (a shape cue exists) |
-| 2.1.2 | AA | Keyboard trap — focus stalls for several consecutive Tabs |
-| 2.4.1 | AA | No skip link near the top of the tab order |
-| 2.4.3 | AA | Positive `tabindex` (logical/visual order is an AI check) |
-| 3.2.1 | AA | Context change (navigation) from focus alone |
-| 4.1.2 | AA | Focusable control with no accessible name (blocks speech control) |
+| WCAG | Level | Persona | Check |
+|------|-------|---------|-------|
+| 2.4.7 | AA | keyboard | Focus indicator **present** — a declared `outline`/`box-shadow` in the computed style, or a pixel change on focus. (2.4.7 sets no size/contrast bar.) |
+| 2.4.13 | AAA (informative) | keyboard | Focus indicator **strength** — changed area ≥ a 2px-thick perimeter **and** ≥ 3:1 focused/unfocused contrast. Advisory, never a fail. |
+| 1.4.1 | AA | keyboard | Indicator is not colour-only (a shape cue exists) |
+| 2.1.2 | AA | keyboard | Keyboard trap — focus stalls for several consecutive Tabs |
+| 2.4.1 | AA | keyboard | No skip link near the top of the tab order |
+| 2.4.3 | AA | keyboard | Positive `tabindex` (logical/visual order is an AI check) |
+| 3.2.1 | AA | keyboard | Context change (navigation) from focus alone |
+| 4.1.2 | AA | keyboard | Focusable control with no accessible name (blocks speech control) |
+| 1.1.1 | AA | screen-reader | Image/graphic with no accessible name (missing alt text/aria-label) |
+| 1.3.1 | AA | screen-reader | Heading level skip (jumps past one or more levels) |
+| 1.3.1 | AA | screen-reader | Duplicate, unlabeled landmark roles (can't be told apart by role alone) |
+| 4.1.2 | AA | screen-reader | Interactive control whose whole announcement is a bare role — reading-order superset of the keyboard-persona 4.1.2 check, also catches arrow-key browse-mode-only controls |
+| 4.1.3 | AA | screen-reader | A declared live region (`aria-live`/`role=status\|alert\|log\|alertdialog`) that never announced anything all session |
 
 The scenario-level verdicts — "was every control *needed to complete the goal* reachable"
 (2.1.1) and "no trap *on the path*" (full 2.1.2) — need the AI-driven goal path, so the
-agent produces them from the trace. The 2.4.1 / 4.1.2 checks directly support the W3C
-keyboard+speech persona ("Ade", <https://www.w3.org/WAI/people-use-web/user-stories/story-one/>).
+agent produces them from the trace. The 2.4.1 / 4.1.2 keyboard-persona checks directly
+support the W3C keyboard+speech persona ("Ade",
+<https://www.w3.org/WAI/people-use-web/user-stories/story-one/>); the screen-reader-persona
+checks support the W3C blind/screen-reader persona ("Lakshmi",
+<https://www.w3.org/WAI/people-use-web/user-stories/story-three/>).
 
 ## Output
 
@@ -139,13 +161,15 @@ Everything is written under a per-user temp dir (`${TMPDIR}/keyboard-a11y-tester
 ```
 <out>/<site-or-case-id>/
   <viewport>/
-    trace.json                    # per-step evidence: keystroke, selector, AX name/role/state, focus style, bbox, focus_visible, screenshot ref
-    deterministic-findings.json   # findings: wcag, conformance_level, confidence, severity, url, locations, evidence[]
-    screenshots/step_NNNN.png     # focused-region crop (inflated to include the focus ring)
+    trace.json                    # per-step evidence: keystroke, selector, AX name/role/state, focus style, bbox, focus_visible, sr_announcement, screenshot ref
+    deterministic-findings.json   # findings: wcag, persona, evidence_kind, conformance_level, confidence, severity, url, locations, evidence[]
+    screen-reader-census.json     # (screen-reader persona) reading-order entries + declared live regions, per page URL visited
+    screenshots/step_NNNN.png     # focused-region crop (inflated to include the focus ring); keyboard persona only
 ```
 
-Every finding references the evidence step(s), carries a confidence score and severity,
-names the page URL, and maps to a specific WCAG success criterion.
+Every finding references its evidence (a step id, or — for screen-reader census-sourced
+findings — a page selector), carries a confidence score and severity, names the page URL,
+and maps to a specific WCAG success criterion.
 
 ## Focus-visible detection (2.4.7 AA presence + 2.4.13 AAA strength)
 
@@ -170,6 +194,35 @@ with caution. AA presence is unaffected, being driven by the computed style.)
 So 2.4.7 (AA) requires only that an indicator is *visible* with no size/contrast minimum: a
 faint 1px or low-opacity ring passes AA and is flagged *weak* at AAA — rather than being
 falsely reported as "no focus indicator."
+
+## Screen-reader detection (Lakshmi)
+
+The screen-reader persona is emulated, never driven for real: `@guidepup/virtual-screen-reader`
+builds an ARIA/ACCNAME-spec accessible tree over the live page and computes what a
+spec-compliant screen reader would announce, entirely in the browser's own JS engine — no
+NVDA/JAWS/VoiceOver is launched, and it works the same way on any OS the runner itself
+supports.
+
+Its self-contained browser bundle is injected via Playwright's `context.addInitScript`,
+which is not subject to the page's own CSP — verified against both a synthetic CSP-locked
+page and a real CSP-locked production site. Once injected, its virtual cursor **tracks
+real keyboard focus automatically** (it listens for native `focusin` events), so every
+`step` you drive with real `Tab`/`Enter`/etc. produces a matching `sr_announcement` with no
+separate "chasing" logic and no drift between what's focused and what's reported as
+announced. The same mechanism also wires a `MutationObserver` that computes WAI-ARIA
+live-region semantics and captures `"assertive: …"`/`"polite: …"` announcements as they
+happen — this is what `4.1.3` (Status Messages) findings are derived from.
+
+Separately, once per newly-visited page URL, an ephemeral instance walks the *entire* page
+in reading order (never touching the live per-step monitor) to build
+`screen-reader-census.json` — the source for the heading-hierarchy, duplicate-landmark,
+missing-alt-text, and bare-role-control checks, since those need whole-page context rather
+than just the stops a keyboard user's Tab order happens to visit.
+
+**This augments but does not replace testing with a real screen reader and real users** —
+the upstream library's own README says exactly that, and it's worth repeating: this checks
+what a *spec-compliant* screen reader should announce given the page's ARIA/HTML, not the
+specific quirks of any one real screen reader implementation.
 
 ## CAPTCHAs
 
