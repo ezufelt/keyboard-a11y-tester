@@ -80,6 +80,21 @@ test.describe('seeded-defect fixtures', () => {
     }
   });
 
+  test('detached-focus-ring.html: 2.4.7 does not false-positive when the indicator is a JS-positioned overlay unrelated by DOM structure', async () => {
+    // Regression test: the input has no focus style and the ring is a
+    // sibling, not an ancestor -- neither the own-box nor the ancestor-box
+    // tier can see it. Only the geometric nearby-search tier
+    // (findNearbyIndicatorBox) does.
+    const outDir = tmpOutDir();
+    try {
+      const { findings, trace } = await runBatch({ url: fixtureUrl('detached-focus-ring.html'), persona: 'keyboard', outDir, maxSteps: 5 });
+      expect(findings.some((f) => f.wcag === '2.4.7')).toBe(false);
+      expect(trace.steps.some((s) => s.focus_visible?.indicator === 'detached')).toBe(true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('clean.html: skip link does not false-positive on 2.4.13 (Focus Appearance)', async () => {
     // Regression test: the skip link is off-canvas (left: -9999px) until
     // :focus, when it jumps on-screen with a strong 3px outline. Once focus

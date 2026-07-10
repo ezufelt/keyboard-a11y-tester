@@ -176,7 +176,7 @@ Each entry in `steps[]`:
 | `pixel_cue` | boolean | Pixels changed on focus. |
 | `visible` | boolean | `style_cue \|\| pixel_cue` — the AA pass/fail verdict. |
 | `shape_cue` | boolean | Non-colour-only signal (for 1.4.1). |
-| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"container"\|"none"` | `"container"` means the indicator was only found on an ancestor box, not the focused element itself. |
+| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"container"\|"detached"\|"none"` | `"container"` means the indicator was only found on an ancestor box, not the focused element itself. `"detached"` means it was found via a bounded pixel search near the element, with no DOM relationship to it at all (e.g. a portaled/absolutely-positioned ring). |
 
 When the focus region is too small/indeterminate: `{ visible: null, note: "region too small / indeterminate" }`, and `focus_appearance` is `null`.
 

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: focus indicator is a JS-positioned overlay, not a DOM ancestor (expect visible, not a false 2.4.7)</title>
+<style>
+  /* The control itself declares no focus style at all, and its indicator
+     (#ring) is a SIBLING, not a wrapping ancestor -- unlike
+     focus-within-wrapper.html, there is no CSS relationship (:focus,
+     :focus-within) between the two elements either. The only link is the
+     focusin/focusout listener below, mimicking a decoupled/portaled overlay
+     ring (e.g. a design system that renders one shared, JS-positioned focus
+     ring element instead of per-control CSS). */
+  input { outline: none; border: 1px solid #ccc; padding: 6px; }
+  #ring {
+    position: fixed;
+    display: none;
+    box-sizing: border-box;
+    border: 3px solid #0969da;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <label>Name <input type="text" id="target"></label>
+  <div id="ring"></div>
+  <script>
+    const ring = document.getElementById('ring');
+    document.addEventListener('focusin', (e) => {
+      const r = e.target.getBoundingClientRect();
+      // Offset well past the own-box tier's own ring-slice search radius
+      // (up to 9px, see RING_SLICES in scripts/runner.mjs) so this fixture
+      // actually exercises the new bounded nearby-search tier, not the
+      // existing own-box one.
+      const pad = 16;
+      ring.style.left = (r.left - pad) + 'px';
+      ring.style.top = (r.top - pad) + 'px';
+      ring.style.width = (r.width + pad * 2) + 'px';
+      ring.style.height = (r.height + pad * 2) + 'px';
+      ring.style.display = 'block';
+    });
+    document.addEventListener('focusout', () => {
+      ring.style.display = 'none';
+    });
+  </script>
+</body>
+</html>

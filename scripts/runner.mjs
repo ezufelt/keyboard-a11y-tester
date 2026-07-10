@@ -787,6 +787,80 @@ function focusMetrics(focusedPng, baselinePng, box) {
   };
 }
 
+// A real focus indicator, however implemented (CSS ring on the element,
+// :focus-within on a wrapper, or a decoupled/portaled overlay positioned by
+// JS), renders close to the control it indicates -- so a small fixed search
+// margin around the element's own box catches genuinely detached
+// implementations (an absolutely-positioned ring that isn't a DOM ancestor
+// at all) without reopening full-frame diffing to every unrelated change
+// elsewhere on the page.
+const NEARBY_SEARCH_MARGIN = 40;
+const MIN_COMPONENT_PIXELS = 12;
+
+// Searches a bounded window around the element's own box for a focus
+// indicator that has no DOM relationship to it at all -- a sibling or
+// portaled overlay repositioned by JS on focus, which the ancestor-box walk
+// (finalizeFocusVisible) structurally cannot find since it only looks up the
+// DOM tree. Builds a changed-pixel mask over the window (same per-pixel
+// threshold as the AAA loop above), flood-fills it into connected
+// components, and returns the largest surviving one's bounding box -- or
+// null if nothing but noise changed nearby.
+function findNearbyIndicatorBox(focusedPng, baselinePng, ownBox) {
+  const frameW = Math.min(focusedPng.width, baselinePng.width);
+  const frameH = Math.min(focusedPng.height, baselinePng.height);
+  const win = inflate(ownBox, NEARBY_SEARCH_MARGIN);
+  const x0 = Math.min(Math.max(0, Math.floor(win.x)), Math.max(0, frameW - 1));
+  const y0 = Math.min(Math.max(0, Math.floor(win.y)), Math.max(0, frameH - 1));
+  const x1 = Math.max(x0 + 1, Math.min(frameW, Math.ceil(win.x + win.width)));
+  const y1 = Math.max(y0 + 1, Math.min(frameH, Math.ceil(win.y + win.height)));
+  const w = x1 - x0, h = y1 - y0;
+  if (w < 1 || h < 1) return null;
+
+  const changed = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const fx = x0 + x, fy = y0 + y;
+      const iA = (fy * focusedPng.width + fx) * 4;
+      const iB = (fy * baselinePng.width + fx) * 4;
+      const d = Math.max(
+        Math.abs(focusedPng.data[iA] - baselinePng.data[iB]),
+        Math.abs(focusedPng.data[iA + 1] - baselinePng.data[iB + 1]),
+        Math.abs(focusedPng.data[iA + 2] - baselinePng.data[iB + 2])
+      );
+      if (d > 32) changed[y * w + x] = 1;
+    }
+  }
+
+  // 4-connected flood fill (iterative, no recursion) -- keep the largest
+  // component above the noise floor.
+  const visited = new Uint8Array(w * h);
+  let best = null;
+  const stack = [];
+  for (let start = 0; start < w * h; start++) {
+    if (!changed[start] || visited[start]) continue;
+    let count = 0, minX = w, minY = h, maxX = 0, maxY = 0;
+    stack.push(start);
+    visited[start] = 1;
+    while (stack.length) {
+      const p = stack.pop();
+      const px = p % w, py = (p / w) | 0;
+      count++;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+      if (px > 0 && changed[p - 1] && !visited[p - 1]) { visited[p - 1] = 1; stack.push(p - 1); }
+      if (px < w - 1 && changed[p + 1] && !visited[p + 1]) { visited[p + 1] = 1; stack.push(p + 1); }
+      if (py > 0 && changed[p - w] && !visited[p - w]) { visited[p - w] = 1; stack.push(p - w); }
+      if (py < h - 1 && changed[p + w] && !visited[p + w]) { visited[p + w] = 1; stack.push(p + w); }
+    }
+    if (count >= MIN_COMPONENT_PIXELS && (!best || count > best.count)) {
+      best = { count, box: { x: x0 + minX, y: y0 + minY, width: maxX - minX + 1, height: maxY - minY + 1 } };
+    }
+  }
+  return best ? best.box : null;
+}
+
 // ---------------------------------------------------------------------------
 // Step capture (shared by the blind Tab-crawl and the AI-driven mode)
 // ---------------------------------------------------------------------------
@@ -911,6 +985,17 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
         if (am && am.visible && (m === null || !m.visible)) { m = am; indicatorSource = 'container'; break; }
       }
     }
+    // Neither the element's own box nor any DOM ancestor showed an indicator --
+    // last resort, search a small bounded radius around the element for one
+    // that has no DOM relationship to it at all (a sibling or portaled overlay
+    // repositioned by JS on focus, e.g. an absolutely-positioned custom ring).
+    if (m === null || !m.visible) {
+      const nearbyBox = findNearbyIndicatorBox(fullFrames[n], baseline, s.bounding_box);
+      if (nearbyBox) {
+        const nm = focusMetrics(fullFrames[n], baseline, nearbyBox);
+        if (nm && nm.visible) { m = nm; indicatorSource = 'nearby'; }
+      }
+    }
     if (m === null) {
       s.focus_visible = { visible: null, note: 'region too small / indeterminate' };
       s.focus_appearance = null;
@@ -929,6 +1014,7 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
       const shapeCue = styleCue || m.borderBand >= PRESENCE_FLOOR || m.edge >= PRESENCE_FLOOR;
       let indicator = 'none';
       if (indicatorSource === 'container') indicator = 'container';
+      else if (indicatorSource === 'nearby') indicator = 'detached';
       else if (styleCue) indicator = cfs.has_outline ? 'outline' : 'shadow';
       else if (m.borderBand >= PRESENCE_FLOOR) indicator = 'ring';
       else if (m.edge >= PRESENCE_FLOOR) indicator = 'edge';

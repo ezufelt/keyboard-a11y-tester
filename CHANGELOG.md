@@ -27,6 +27,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ancestor_boxes` (trace step field): up to 3 bounded ancestor boxes per focus stop, so the
   2.4.7/2.4.13 pixel-diff can also catch a focus indicator rendered on a wrapping
   `:focus-within` container rather than the focused element itself.
+- When neither the focused element's own box nor any ancestor box shows an indicator, the
+  2.4.7/2.4.13 pixel-diff now also searches a small bounded radius around the element for a
+  connected region of changed pixels (`indicator: "detached"` in the trace). This catches an
+  indicator with no DOM relationship to the control at all — a sibling or portaled overlay
+  repositioned by JS on focus — which the ancestor-box walk above can't find, since it only
+  ever looks up the DOM tree. Still bounded, not a full-frame diff, so unrelated changes
+  elsewhere on the page aren't picked up.
 
 ### Fixed
 - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` descriptions still

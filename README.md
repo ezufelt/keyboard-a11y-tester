@@ -151,7 +151,11 @@ increasing offset (thin *and* offset outlines), the interior, and top/bottom edg
 If the focused element's own box shows no indicator, the same diff is also tried against up
 to 3 bounded ancestor boxes (`ancestor_boxes` in the trace) — this catches a common
 custom-field pattern where the indicator is a border/shadow on a `:focus-within`-styled
-wrapper, not the control itself.
+wrapper, not the control itself. If that also finds nothing, a small fixed-radius search
+around the element looks for an indicator with no DOM relationship to it at all — a sibling
+or portaled overlay repositioned by JS on focus (`indicator: "detached"` in the trace). This
+search is still bounded, not full-frame, so it won't pick up unrelated changes elsewhere on
+the page.
 
 **Strength (AAA, informative)** measures whether the indicator meets 2.4.13 Focus
 Appearance — changed area ≥ a 2px-thick perimeter of the control, and ≥ 3:1 WCAG luminance
