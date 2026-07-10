@@ -138,6 +138,7 @@ informative.**
 | 2.4.1 | AA | keyboard | No skip link near the top of the tab order |
 | 2.4.3 | AA | keyboard | Positive `tabindex` (logical/visual order is an AI check) |
 | 3.2.1 | AA | keyboard | Context change (navigation) from focus alone |
+| 3.3.2 | AA | keyboard | File input named only by the user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but no author label conveys the field's purpose |
 | 4.1.2 | AA | keyboard | Focusable control with no accessible name (blocks speech control) |
 | 1.1.1 | AA | screen-reader | Image/graphic with no accessible name (missing alt text/aria-label) |
 | 1.3.1 | AA | screen-reader | Heading level skip (jumps past one or more levels) |

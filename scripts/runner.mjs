@@ -189,6 +189,7 @@ function () {
     isBody: false,
     selector: cssPath(el),
     tag: el.tagName.toLowerCase(),
+    inputType: el.tagName.toLowerCase() === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
     tabindex: tabindexAttr === null ? null : parseInt(tabindexAttr, 10),
     bbox: { x: r.x, y: r.y, width: r.width, height: r.height },
     domOrderIndex,
@@ -227,9 +228,23 @@ async function axForBackendNode(cdp, backendNodeId) {
     for (const p of node.properties || []) {
       states[p.name] = p.value && 'value' in p.value ? p.value.value : p.value;
     }
+    // Which ACCNAME source actually produced the name (first non-superseded
+    // source carrying a non-empty value). Lets checks tell an author-provided
+    // name (label / aria-label / aria-labelledby / contents) apart from a
+    // user-agent default — e.g. the bare file input's own "Choose File",
+    // whose winning source is `contents` with attribute `value`.
+    let nameSource = null;
+    for (const s of node.name?.sources || []) {
+      if (s.superseded) continue;
+      const v = s.value && s.value.value;
+      if (v === undefined || v === null || String(v).trim() === '') continue;
+      nameSource = { type: s.type, attribute: s.attribute ?? null, native: s.nativeSource ?? null };
+      break;
+    }
     return {
       role: node.role?.value ?? null,
       name: node.name?.value ?? null,
+      name_source: nameSource,
       ignored: !!node.ignored,
       states,
     };
@@ -607,10 +622,11 @@ async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevSte
     keystroke_sent: keystroke,
     active_element_selector: focused.selector,
     tag: focused.tag ?? null,
+    input_type: focused.inputType ?? null,
     tabindex: focused.tabindex ?? null,
     dom_order_index: focused.domOrderIndex ?? -1,
     ax_name_role_state: focused.ax
-      ? { name: focused.ax.name, role: focused.ax.role, states: focused.ax.states }
+      ? { name: focused.ax.name, role: focused.ax.role, states: focused.ax.states, name_source: focused.ax.name_source ?? null }
       : null,
     focus_moved: focusMoved,
     bounding_box: focused.bbox ?? null,
@@ -740,6 +756,7 @@ function severityFor(wcag) {
     '2.4.7': 'serious',
     '2.4.13': 'minor',
     '3.2.1': 'serious',
+    '3.3.2': 'moderate',
     '4.1.2': 'serious',
     '4.1.3': 'moderate',
   }[wcag] || 'moderate';
@@ -954,6 +971,46 @@ function deriveFindingsKeyboard({ steps, startUrl, contextChangeOnFocus }, { vie
         impact: 'A keyboard user who relies on speech recognition cannot target these controls by voice, ' +
           'and their purpose is not conveyed programmatically.',
         evidence: unnamed.slice(0, 10).map((s) => s.step_id),
+      })
+    );
+  }
+
+  // --- 3.3.2 Labels or Instructions: file input named only by the UA default
+  // ACCNAME gives a bare <input type=file> the browser's own button text
+  // ("Choose File"), so the 4.1.2 check above stays quiet — the control has a
+  // name — yet no author label says WHAT to upload. A speech user can voice-
+  // target "Choose File", but the field's purpose is conveyed by nothing.
+  // Scoped to file inputs: their value attribute can never author the name
+  // (it is the filename, and setting it is restricted), so a `contents`+
+  // `value` winning name source is always the user-agent default — this can't
+  // false-positive on <input type=submit value="Send">, whose value IS the
+  // author's label.
+  const uaNamedStops = focusStops.filter((s) =>
+    s.input_type === 'file' &&
+    s.ax_name_role_state?.name &&
+    s.ax_name_role_state?.name_source?.type === 'contents' &&
+    s.ax_name_role_state?.name_source?.attribute === 'value'
+  );
+  // A crawl can revisit the same control (tab cycle); report unique controls.
+  const uaNamed = [...new Map(uaNamedStops.map((s) => [s.active_element_selector, s])).values()];
+  if (uaNamed.length) {
+    const where = locate(uaNamed, startUrl);
+    findings.push(
+      makeFinding({
+        id: `ua-default-name-${viewport}`,
+        wcag: '3.3.2',
+        confidence: 0.75,
+        viewport,
+        goalId,
+        ...where,
+        summary: `${uaNamed.length} file input(s) are named only by the user-agent default ` +
+          `("Choose File") with no author-provided label` +
+          (where.locations.length ? ` (${where.locations.join('; ')})` : '') + `: ` +
+          uaNamed.slice(0, 6).map((s) => s.active_element_selector).join(', ') +
+          (uaNamed.length > 6 ? ' …' : ''),
+        impact: 'The control announces only the browser’s generic button text: nothing tells the ' +
+          'user what file is expected. Screen-reader and speech users get no field purpose.',
+        evidence: uaNamed.slice(0, 10).map((s) => s.step_id),
       })
     );
   }

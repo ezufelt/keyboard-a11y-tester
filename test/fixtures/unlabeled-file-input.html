@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: unlabeled file input (UA-default name)</title>
+<!-- One bare <input type=file>: ACCNAME resolves to the browser's own
+     "Choose File" (contents/value source), so the 4.1.2 missing-name check
+     stays quiet, but no author label exists -> 3.3.2 ua-default-name must
+     fire for it and ONLY it. The label-wrapped file input and the labeled
+     text input are controls that must NOT fire. Default browser focus
+     outlines are left intact so no focus-indicator findings pollute runs. -->
+</head>
+<body>
+  <main>
+    <h1>Attach documents</h1>
+    <label>Cover letter <input type="text" id="cover"></label>
+    <label>Portfolio (PDF) <input type="file" id="portfolio"></label>
+    <input type="file" id="bare">
+  </main>
+</body>
+</html>
