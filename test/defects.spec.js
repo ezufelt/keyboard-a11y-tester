@@ -136,6 +136,48 @@ test.describe('seeded-defect fixtures', () => {
     }
   });
 
+  test('focus-fill-high-contrast.html: no 1.4.1 and no 2.4.13-weak when a full-box fill has >= 3:1 luminance contrast', async () => {
+    // Regression test: a card/button that swaps its whole background colour
+    // on focus (no ring/underline/outline) used to get misclassified as an
+    // 'edge' cue -- the top/bottom edge bands are subsets of the box, so a
+    // uniform fill lights them up too -- which both hid it from the 1.4.1
+    // check entirely and corrupted the AAA contrast measurement (restricted
+    // to a thin perimeter band instead of the real interior change).
+    const outDir = tmpOutDir();
+    try {
+      const { findings, trace } = await runBatch({ url: fixtureUrl('focus-fill-high-contrast.html'), persona: 'keyboard', outDir, maxSteps: 5 });
+      expect(findings.some((f) => f.wcag === '1.4.1')).toBe(false);
+      expect(findings.some((f) => f.wcag === '2.4.13')).toBe(false);
+      expect(findings.some((f) => f.wcag === '2.4.7')).toBe(false);
+      const fv = trace.steps.find((s) => s.active_element_selector === '#b1')?.focus_visible;
+      expect(fv?.indicator).toBe('interior-only');
+      expect(fv?.color_safe).toBe(true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('focus-fill-color-only.html: 1.4.1 (Use of Color) fires for an isoluminant full-box fill', async () => {
+    // Same fill pattern as focus-fill-high-contrast.html, but the focused/
+    // unfocused backgrounds are near-isoluminant (~1.05:1) -- the only real
+    // difference is hue. With no ring/underline as a colourblind-safe
+    // fallback, this must fail 1.4.1.
+    const outDir = tmpOutDir();
+    try {
+      const { findings, trace } = await runBatch({ url: fixtureUrl('focus-fill-color-only.html'), persona: 'keyboard', outDir, maxSteps: 5 });
+      const f = findings.find((x) => x.wcag === '1.4.1');
+      expect(f, JSON.stringify(findings, null, 2)).toBeTruthy();
+      // 2.4.7 is presence-only and does not care about colour -- the fill is
+      // still a perceivable change, so it must not also fail here.
+      expect(findings.some((x) => x.wcag === '2.4.7')).toBe(false);
+      const fv = trace.steps.find((s) => s.active_element_selector === '#b1')?.focus_visible;
+      expect(fv?.indicator).toBe('interior-only');
+      expect(fv?.color_safe).toBe(false);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('clean.html: skip link does not false-positive on 2.4.13 (Focus Appearance)', async () => {
     // Regression test: the skip link is off-canvas (left: -9999px) until
     // :focus, when it jumps on-screen with a strong 3px outline. Once focus

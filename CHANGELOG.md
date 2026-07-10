@@ -50,6 +50,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only when more than one viewport ran): compares each viewport's census against the others and
   flags a named interactive control present in one but entirely absent from another for the
   same URL, at low confidence (0.4) since this can reflect intentional responsive design.
+- 1.4.1 (Use of Color) now resolves deterministically for a full-box `interior-only` fill (e.g.
+  a card or large button that swaps its whole background colour on focus instead of drawing a
+  ring) instead of always deferring to AI review: a new `color_safe` field on `focus_visible`
+  reuses the existing focused/unfocused luminance-contrast measurement (the same >= 3:1 bar
+  2.4.13 already uses) to tell a real lightness shift (colourblind-safe even with no ring/
+  underline) apart from a near-isoluminant, colour-only change. Confidence raised from 0.3 to
+  0.7 for this finding.
 
 ### Fixed
 - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` descriptions still
@@ -70,6 +77,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Focus tracked inside an `<iframe>` no longer gets misattributed to the unmoving `<iframe>`
   element itself for every control inside it — previously this both hid each inner control's
   own findings and read as a keyboard trap (2.1.2) to the "focus didn't move" heuristic.
+- A full-box background-colour fill on focus (no ring/underline/outline) was misclassified as
+  an `"edge"` shape cue: the top/bottom edge bands are subsets of the box, so a uniform fill
+  changes them too, same as the interior. This both hid full-fill indicators from the 1.4.1
+  Use-of-Color check entirely and corrupted their 2.4.13 contrast measurement (restricted to a
+  thin perimeter band meant for genuine rings, instead of the real interior change) — a
+  high-contrast fill could be misreported as a "weak" indicator. `edge` now only counts as a
+  shape cue when the interior did *not* also change.
 
 ## [0.2.0]
 

@@ -770,7 +770,14 @@ function focusMetrics(focusedPng, baselinePng, box) {
   // contrast with that incidental content and produces a bogus ratio. A pure
   // interior-fill indicator (no ring/edge) has no such exterior noise to
   // avoid, so it keeps measuring the whole region as before.
-  const ringLike = borderBand >= PRESENCE_FLOOR || edge >= PRESENCE_FLOOR;
+  //
+  // A full-box fill (e.g. a card/button swapping its whole background colour
+  // on focus) also crosses the edge floor -- the top/bottom bands are subsets
+  // of the box, so they read the same near-100% change as the interior. That
+  // is NOT a ring/underline: `interior` also being at the floor is precisely
+  // what tells the two apart, so only treat it as ring-like when the edge
+  // band changed WITHOUT the interior changing along with it.
+  const ringLike = borderBand >= PRESENCE_FLOOR || (edge >= PRESENCE_FLOOR && interior < PRESENCE_FLOOR);
   const rx = Math.min(Math.max(0, Math.floor(region.x)), Math.max(0, focusedPng.width - 1));
   const ry = Math.min(Math.max(0, Math.floor(region.y)), Math.max(0, focusedPng.height - 1));
   // Shrunk 2px in from the reported border-box on each side: subpixel layout
@@ -1046,14 +1053,28 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
       const visible = styleCue || pixelCue;
       // 1.4.1 classification: a shape cue (outline/shadow/underline/border) is
       // colourblind-safe; interior-only may be a safe fill OR colour-only.
-      const shapeCue = styleCue || m.borderBand >= PRESENCE_FLOOR || m.edge >= PRESENCE_FLOOR;
+      // A full-box fill also lights up the edge bands (they're subsets of the
+      // box, so a uniform change covers them too) -- that's not a genuine
+      // edge/underline shape, so only count `edge` as a shape cue when the
+      // interior *didn't* change along with it. See the matching `ringLike`
+      // note on focusMetrics() above.
+      const fillCue = m.interior >= PRESENCE_FLOOR;
+      const edgeOnlyCue = m.edge >= PRESENCE_FLOOR && !fillCue;
+      const shapeCue = styleCue || m.borderBand >= PRESENCE_FLOOR || edgeOnlyCue;
       let indicator = 'none';
       if (indicatorSource === 'container') indicator = 'container';
       else if (indicatorSource === 'nearby') indicator = 'detached';
       else if (styleCue) indicator = cfs.has_outline ? 'outline' : 'shadow';
       else if (m.borderBand >= PRESENCE_FLOOR) indicator = 'ring';
-      else if (m.edge >= PRESENCE_FLOOR) indicator = 'edge';
-      else if (m.interior >= PRESENCE_FLOOR) indicator = 'interior-only';
+      else if (edgeOnlyCue) indicator = 'edge';
+      else if (fillCue) indicator = 'interior-only';
+      // For an interior-only fill, reuse the AAA focused/unfocused luminance
+      // ratio (>= 3:1, the same bar 2.4.13 uses) as the 1.4.1 signal: a fill
+      // that shifts brightness enough to clear it reads as a real lightness
+      // change independent of hue, so it isn't "colour is the only cue" even
+      // without a ring/underline. Below the bar (or no measurable luminance
+      // change at all), treat it as unresolved/colour-only.
+      const colorSafe = indicator === 'interior-only' ? m.aaa.contrast_pass === true : null;
       s.focus_visible = {
         border_band: Number(m.borderBand.toFixed(4)),
         interior: Number(m.interior.toFixed(4)),
@@ -1063,6 +1084,7 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
         visible,                 // AA (2.4.7): present if either cue
         shape_cue: shapeCue,
         indicator,
+        color_safe: colorSafe,   // 1.4.1: null unless indicator === 'interior-only'
       };
       // AAA (2.4.13) is only meaningful when an indicator is present. Informative.
       s.focus_appearance = visible
@@ -1199,24 +1221,31 @@ function deriveFindingsKeyboard({ steps, startUrl, contextChangeOnFocus }, { vie
 
   // --- 1.4.1 Use of Color: focus indicator appears to be interior-only ----
   // Visible on focus, but the change is inside the box with no shape cue
-  // (ring/underline/border). That may be a colourblind-safe luminance fill OR
-  // a colour-only change that fails 1.4.1. Deterministic layer can't tell hue
-  // from luminance — flagged low-confidence for the AI layer to judge.
+  // (ring/underline/border) -- e.g. a card or large button that swaps its
+  // whole background colour on focus instead of drawing a ring. That may be a
+  // colourblind-safe luminance fill OR a colour-only change that fails 1.4.1.
+  // `color_safe` (focusMetrics' focused/unfocused luminance ratio, >= 3:1 --
+  // the same bar 2.4.13 uses) tells the two apart: a fill bright/dark enough
+  // to clear it reads as a real lightness change independent of hue, so only
+  // fills that DON'T clear it (or have no measurable luminance change at all)
+  // are flagged here.
   const colourOnly = focusStops.filter(
-    (s) => s.focus_visible && s.focus_visible.visible === true && s.focus_visible.shape_cue === false
+    (s) => s.focus_visible && s.focus_visible.visible === true &&
+      s.focus_visible.shape_cue === false && s.focus_visible.color_safe !== true
   );
   if (colourOnly.length) {
     findings.push(
       makeFinding({
         id: `focus-indicator-color-only-${viewport}`,
         wcag: '1.4.1',
-        confidence: 0.3,
+        confidence: 0.7,
         viewport,
         goalId,
         ...locate(colourOnly, startUrl),
-        summary: `${colourOnly.length} focus stop(s) show only an interior change with no shape cue ` +
-          `(no outline/underline/border). Needs AI review: a colour-only indicator fails 1.4.1 for users ` +
-          `who cannot perceive the hue difference. e.g. ${colourOnly.slice(0, 5).map((s) => s.active_element_selector).join(', ')}`,
+        summary: `${colourOnly.length} focus stop(s) show only an interior fill change with no shape cue ` +
+          `(no outline/underline/border) and < 3:1 focused/unfocused luminance contrast: a colour-only ` +
+          `indicator fails 1.4.1 for users who cannot perceive the hue difference. ` +
+          `e.g. ${colourOnly.slice(0, 5).map((s) => s.active_element_selector).join(', ')}`,
         impact: 'A keyboard user with colour blindness may not perceive which control has focus if the only ' +
           'change is colour.',
         evidence: colourOnly.slice(0, 10).map((s) => s.step_id),

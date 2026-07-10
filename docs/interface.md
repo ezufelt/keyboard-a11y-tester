@@ -178,8 +178,9 @@ Each entry in `steps[]`:
 | `style_cue` | boolean | Computed outline/box-shadow declared. |
 | `pixel_cue` | boolean | Pixels changed on focus. |
 | `visible` | boolean | `style_cue \|\| pixel_cue` — the AA pass/fail verdict. |
-| `shape_cue` | boolean | Non-colour-only signal (for 1.4.1). |
-| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"container"\|"detached"\|"none"` | `"container"` means the indicator was only found on an ancestor box, not the focused element itself. `"detached"` means it was found via a bounded pixel search near the element, with no DOM relationship to it at all (e.g. a portaled/absolutely-positioned ring). |
+| `shape_cue` | boolean | Non-colour-only signal (for 1.4.1). `edge` only counts as a shape cue when the interior did NOT also change — a full-box fill lights up the edge bands too (they're subsets of the box) without being a genuine edge/underline. |
+| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"container"\|"detached"\|"none"` | `"container"` means the indicator was only found on an ancestor box, not the focused element itself. `"detached"` means it was found via a bounded pixel search near the element, with no DOM relationship to it at all (e.g. a portaled/absolutely-positioned ring). `"interior-only"` covers both a partial-region change and a full-box fill (e.g. a card/button swapping its whole background colour on focus) — see `color_safe`. |
+| `color_safe` | boolean \| null | Only set when `indicator === "interior-only"`; `null` otherwise. `true` when the fill's focused/unfocused luminance contrast clears the same >= 3:1 bar `focus_appearance.contrast_pass` uses — bright/dark enough to read as a real lightness change independent of hue. `false` (or a fill with no measurable luminance change) feeds the 1.4.1 Use-of-Color finding below. |
 
 When the focus region is too small/indeterminate: `{ visible: null, note: "region too small / indeterminate" }`, and `focus_appearance` is `null`.
 
