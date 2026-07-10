@@ -1,5 +1,7 @@
 # keyboard-a11y-tester
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13561/badge)](https://www.bestpractices.dev/projects/13561)
+
 An AI-assisted web accessibility tester that behaves like two W3C personas at once: a
 **keyboard-only** user ("Ade") and a **screen-reader** user ("Lakshmi"). It drives a page
 keyboard-only, records what happens at every focus stop, and emits evidence-linked
@@ -123,7 +125,10 @@ informative.**
 | 1.3.1 | AA | screen-reader | Heading level skip |
 | 1.3.1 | AA | screen-reader | Duplicate, unlabeled landmark roles |
 | 4.1.2 | AA | screen-reader | Interactive control announced as a bare role |
+| 4.1.2 | AA | screen-reader | Broken ARIA ID reference (`aria-controls`/`describedby`/`details`/`errormessage`) |
+| 4.1.2 | AA | screen-reader | Keyboard-focusable control missing from the accessibility tree |
 | 4.1.3 | AA | screen-reader | Declared live region that never announced anything |
+| 1.3.1 | AA | screen-reader | Named control present in one viewport's census but absent in another's (low-confidence, `cross-viewport-findings.json` only, needs confirmation) |
 
 See [`docs/interface.md`](docs/interface.md#wcag-checks) for the authoritative version of
 this table (full check descriptions) and the W3C persona references.
@@ -213,6 +218,10 @@ specific quirks of any one real screen reader implementation.
 
 CAPTCHAs detect automation and refuse to run; the runner has a page-scoped, human-approved
 compatibility workaround. See [`docs/usage.md`](docs/usage.md#captchas) for details.
+
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 ## License
 

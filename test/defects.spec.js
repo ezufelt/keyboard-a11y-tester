@@ -53,6 +53,47 @@ test.describe('seeded-defect fixtures', () => {
     }
   });
 
+  test('broken-aria-reference.html: 4.1.2 (broken ARIA ID reference) fires for the broken refs only', async () => {
+    const outDir = tmpOutDir();
+    try {
+      const { findings, census } = await runBatch({ url: fixtureUrl('broken-aria-reference.html'), persona: 'screen-reader', outDir, maxSteps: 10 });
+      const f = findings.find((x) => x.id.startsWith('sr-broken-aria-reference'));
+      expect(f, JSON.stringify(findings, null, 2)).toBeTruthy();
+      // aria-controls="missing-panel" and aria-errormessage="missing-error" both
+      // fire; the valid aria-describedby="email-hint" must not appear.
+      expect(f.evidence.length).toBe(2);
+      expect(f.evidence).toContain('#toggle');
+      expect(f.evidence).toContain('#password');
+      expect(f.evidence).not.toContain('#email');
+      const page = Object.values(census.pages)[0];
+      expect(page.declared_broken_aria_refs.length).toBe(2);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('focusable-hidden-from-at.html: 4.1.2 (focusable but AT-invisible) fires for the hidden control only', async () => {
+    const outDir = tmpOutDir();
+    try {
+      const { findings } = await runBatch({ url: fixtureUrl('focusable-hidden-from-at.html'), persona: 'all', outDir, maxSteps: 10 });
+      const f = findings.find((x) => x.id.startsWith('sr-focusable-not-exposed'));
+      expect(f, JSON.stringify(findings, null, 2)).toBeTruthy();
+      expect(f.evidence).toEqual(['#hidden-btn']);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('focusable-hidden-from-at.html: 4.1.2 (focusable but AT-invisible) still fires under --persona screen-reader alone', async () => {
+    const outDir = tmpOutDir();
+    try {
+      const { findings } = await runBatch({ url: fixtureUrl('focusable-hidden-from-at.html'), persona: 'screen-reader', outDir, maxSteps: 10 });
+      expect(findings.some((x) => x.id.startsWith('sr-focusable-not-exposed'))).toBe(true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('clean.html: zero AA (pass/fail) findings', async () => {
     const outDir = tmpOutDir();
     try {

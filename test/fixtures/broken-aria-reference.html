@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: broken ARIA ID reference</title>
+<style>
+  button:focus, input:focus { outline: 3px solid #06c; }
+</style>
+<!-- Two broken references (aria-controls and aria-errormessage each pointing
+     at an ID that doesn't exist) must fire sr-broken-aria-reference. The
+     valid aria-describedby (its ID exists) must NOT be included in that
+     finding's evidence. Default focus outlines are left intact so no
+     focus-indicator findings pollute this run. -->
+</head>
+<body>
+  <main>
+    <h1>Broken ARIA references</h1>
+
+    <button id="toggle" aria-controls="missing-panel">Toggle panel</button>
+
+    <label>
+      Email
+      <input type="email" id="email" aria-describedby="email-hint">
+    </label>
+    <p id="email-hint">We'll never share your email.</p>
+
+    <label>
+      Password
+      <input type="password" id="password" aria-errormessage="missing-error">
+    </label>
+  </main>
+</body>
+</html>
