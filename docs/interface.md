@@ -131,13 +131,14 @@ Each entry in `steps[]`:
 | `step_id` | string | `step_NNNN`, 4-digit zero-padded index. |
 | `index` | integer | 1-based. |
 | `keystroke_sent` | string | e.g. `Tab`, `Shift+Tab`, or `type:"<text>"` for typed input. |
-| `active_element_selector` | string | CSS path, or `:root`/`body`. |
+| `active_element_selector` | string | CSS path, or `:root`/`body`. When focus is traced into an iframe (same-origin or cross-origin), `"<outer iframe selector> >>> <inner selector>"`. |
 | `tag` | string \| null | Lowercase tag name. |
 | `tabindex` | integer \| null | Parsed `tabindex` attribute. |
-| `dom_order_index` | integer | Position in `document.querySelectorAll('*')`, or `-1`. |
-| `ax_name_role_state` | `{ name, role, states } \| null` | From the CDP accessibility tree; `states` keys vary per element. |
+| `dom_order_index` | integer | Position in `document.querySelectorAll('*')` (within whichever document the focused element lives in), or `-1`. |
+| `ax_name_role_state` | `{ name, role, states, name_source } \| null` | From the CDP accessibility tree, except inside an iframe: `name_source.type` is `"heuristic"` (label/aria-label/alt/title/text, not full ACCNAME -- ground truth isn't reachable across a cross-origin frame's own target) and `states` is `{}`. |
 | `focus_moved` | boolean | Whether the selector differs from the previous step. |
 | `bounding_box` | `{ x, y, width, height } \| null` | |
+| `ancestor_boxes` | `{ x, y, width, height }[]` | Up to 3 ancestor boxes, capped to ~25x the element's own area, for detecting a `:focus-within`-style indicator on a wrapping container. |
 | `url` | string | Page URL at capture time. |
 | `text` | string | innerText/value/aria-label, trimmed and truncated to 120 chars. |
 | `is_body` | boolean | |
@@ -175,7 +176,7 @@ Each entry in `steps[]`:
 | `pixel_cue` | boolean | Pixels changed on focus. |
 | `visible` | boolean | `style_cue \|\| pixel_cue` — the AA pass/fail verdict. |
 | `shape_cue` | boolean | Non-colour-only signal (for 1.4.1). |
-| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"none"` | |
+| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"container"\|"none"` | `"container"` means the indicator was only found on an ancestor box, not the focused element itself. |
 
 When the focus region is too small/indeterminate: `{ visible: null, note: "region too small / indeterminate" }`, and `focus_appearance` is `null`.
 

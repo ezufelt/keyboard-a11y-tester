@@ -148,17 +148,33 @@ Either one means the indicator is present → AA pass. Pixel diffing compares th
 frame to a scroll-aligned baseline (the next step's frame, where the element is no longer
 focused — so focus is never manipulated programmatically), measuring ring slices at
 increasing offset (thin *and* offset outlines), the interior, and top/bottom edge bands.
+If the focused element's own box shows no indicator, the same diff is also tried against up
+to 3 bounded ancestor boxes (`ancestor_boxes` in the trace) — this catches a common
+custom-field pattern where the indicator is a border/shadow on a `:focus-within`-styled
+wrapper, not the control itself.
 
 **Strength (AAA, informative)** measures whether the indicator meets 2.4.13 Focus
 Appearance — changed area ≥ a 2px-thick perimeter of the control, and ≥ 3:1 WCAG luminance
-contrast between focused and unfocused states. Advisory only. (This measure is unreliable
-on pages that mutate between steps — e.g. "load more" — because the neighbour-frame
-baseline then differs by content, not just the focus ring; treat AAA numbers on such pages
-with caution. AA presence is unaffected, being driven by the computed style.)
+contrast between focused and unfocused states. Advisory only. When a ring/edge cue is
+present, this measurement is restricted to the perimeter band around the control (excluding
+its own interior), so a reveal/reposition-style indicator (e.g. an off-canvas skip link that
+jumps on-screen on `:focus`) isn't corrupted by whatever unrelated content normally renders
+at that spot once focus moves on. (This measure is still unreliable on pages that mutate
+between steps in some other way — e.g. "load more" — because the neighbour-frame baseline
+then differs by content beyond just the focus ring; treat AAA numbers on such pages with
+caution. AA presence is unaffected, being driven by the computed style.)
 
 So 2.4.7 (AA) requires only that an indicator is *visible* with no size/contrast minimum: a
 faint 1px or low-opacity ring passes AA and is flagged *weak* at AAA — rather than being
 falsely reported as "no focus indicator."
+
+**Iframes:** if focus lands inside an `<iframe>` (same-origin or cross-origin — e.g. an
+embedded video player), the runner resolves the real focused control inside it via
+Playwright's frame API rather than stopping at the outer `<iframe>` element, so each inner
+control is tracked and checked distinctly (selector `"<outer selector> >>> <inner selector>"`).
+Its accessible name is a best-effort DOM heuristic (`name_source: "heuristic"` in the
+trace), not the ground-truth accessibility tree, since that isn't reachable across a
+cross-origin frame's own target.
 
 ## Screen-reader detection (Lakshmi)
 

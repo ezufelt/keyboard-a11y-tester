@@ -40,6 +40,41 @@ export function serveFixtureHttp(name) {
   });
 }
 
+// Serves the outer/inner iframe fixtures on two different ports (127.0.0.1 vs
+// localhost), a genuine cross-origin boundary, so Chrome's site isolation puts
+// the iframe's content in its own out-of-process target -- the scenario the
+// resolveInnerFocus() frame recursion in scripts/runner.mjs actually has to
+// handle for something like a real cross-origin video-player embed. Caller
+// must call close() when done.
+export function serveCrossOriginIframeFixture() {
+  const innerHtml = fs.readFileSync(path.join(FIXTURES_DIR, 'iframe-inner.html'), 'utf8');
+  return new Promise((resolve) => {
+    const innerServer = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(innerHtml);
+    });
+    innerServer.listen(0, '127.0.0.1', () => {
+      const innerPort = innerServer.address().port;
+      const outerHtml = fs.readFileSync(path.join(FIXTURES_DIR, 'iframe-outer.html'), 'utf8')
+        .replace('src="iframe-inner.html"', `src="http://localhost:${innerPort}/"`);
+      const outerServer = http.createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(outerHtml);
+      });
+      outerServer.listen(0, '127.0.0.1', () => {
+        const origin = `http://127.0.0.1:${outerServer.address().port}`;
+        resolve({
+          url: origin + '/',
+          close: () => Promise.all([
+            new Promise((r) => innerServer.close(r)),
+            new Promise((r) => outerServer.close(r)),
+          ]),
+        });
+      });
+    });
+  });
+}
+
 // Writes a minimal Playwright storageState file seeding localStorage for one
 // origin, in outDir so it's cleaned up alongside the rest of the test's output.
 export function writeStorageState(outDir, origin, localStorageEntries) {
