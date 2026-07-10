@@ -138,15 +138,26 @@ Screen-reader persona (from the page-wide census + live announcements):
 - **4.1.2** interactive controls whose whole announcement is a bare role (reading-order superset
   of the keyboard persona's Tab-reachable check — also catches arrow-key browse-mode-only
   controls).
+- **4.1.2** broken ARIA ID reference — `aria-controls`/`aria-describedby`/`aria-details`/
+  `aria-errormessage` pointing at an ID that resolves to no element.
+- **4.1.2** keyboard-focusable control absent from the accessibility-tree census (cross-checks
+  the keyboard persona's Tab-reachable trace against this page's census — almost always
+  `aria-hidden="true"` combined with a focusable `tabindex`).
 - **4.1.3** a declared live region (`aria-live`/`role=status|alert|log|alertdialog`) that never
   announced anything all session.
+- **1.3.1** (batch mode, `cross-viewport-findings.json`, only when >1 viewport ran) a named
+  interactive control present in one viewport's census but absent from another's for the same
+  URL. Low confidence (0.4) — often intentional responsive design (e.g. a collapsed nav), treat
+  as a lead to confirm rather than a settled finding.
 
 `trace.json` — every step: keystroke, selector, AX name/role/state, computed focus style, region
 locator, bounding box, focus-visible verdict, screenshot ref, and (screen-reader persona)
 `sr_announcement`. `screen-reader-census.json` — a one-time-per-page structural dump: the full
-reading-order sequence (`entries`, each `{spoken_phrase, role, tag, selector}`) and
-`declared_live_regions`. Read this once per page for the judgment calls below — it's the
-richest source for 2.4.6/1.3.2/label-quality/reading-order review.
+reading-order sequence (`entries`, each `{spoken_phrase, role, tag, selector}`),
+`declared_live_regions`, `declared_broken_aria_refs`, and `declared_alternate_reading_order`
+(`aria-flowto` relationships — descriptive only, no deterministic check reads this, use it for
+the reading-order judgment call below). Read this once per page for the judgment calls below —
+it's the richest source for 2.4.6/1.3.2/label-quality/reading-order review.
 
 ## What YOU add (the AI-judgment findings)
 
@@ -162,8 +173,9 @@ Read the trace + screenshots and write findings the scanners can't, using the SA
   `Enter`/`Space` on custom buttons; does it match its apparent role?).
 - **Form quality** — meaningful labels, validation errors move/announce focus, success reachable.
 - **Reading order vs visual order** (screen-reader persona) — compare
-  `screen-reader-census.json`'s `entries` sequence against the visual layout; the deterministic
-  layer never judges this, only DOM order (2.4.3).
+  `screen-reader-census.json`'s `entries` sequence against the visual layout, and check
+  `declared_alternate_reading_order` for any `aria-flowto` path the visual layout doesn't match;
+  the deterministic layer never judges this, only DOM order (2.4.3).
 - **Announcement quality** (screen-reader persona) — is a name/label present but *unhelpful*
   ("button", "link", generic icon-only controls with a technically-non-empty but meaningless
   name)? Deterministic checks only catch a fully bare role, not a bad one.

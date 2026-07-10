@@ -18,6 +18,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but
   no author label conveys the field's purpose. Adds an additive `name_source` field (plus
   `input_type` on steps) captured from CDP's winning ACCNAME source.
+- New deterministic check, **4.1.2 (AA, screen-reader)**: flags a broken ARIA ID reference —
+  `aria-controls`/`aria-describedby`/`aria-details`/`aria-errormessage` whose value contains
+  only ID(s) that resolve to no element. Adds an additive `declared_broken_aria_refs` field to
+  `screen-reader-census.json`.
+- New deterministic check, **4.1.2 (AA, screen-reader)**: flags a keyboard-focusable control
+  that's entirely absent from the screen-reader census (almost always `aria-hidden="true"`
+  paired with a focusable `tabindex`) by cross-referencing the keyboard persona's Tab-reachable
+  trace against the census for the same page — the first check to correlate both personas'
+  data for a single finding.
+- `screen-reader-census.json` now also captures `declared_alternate_reading_order`
+  (`aria-flowto` relationships) — descriptive only, additional evidence for the AI layer's
+  reading-order-vs-visual-order judgment; no deterministic check reads it.
+- New top-level output, **`cross-viewport-findings.json`** (batch mode, screen-reader persona,
+  only when more than one viewport ran): compares each viewport's census against the others and
+  flags a named interactive control present in one but entirely absent from another for the
+  same URL, at low confidence (0.4) since this can reflect intentional responsive design.
 
 ### Fixed
 - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` descriptions still

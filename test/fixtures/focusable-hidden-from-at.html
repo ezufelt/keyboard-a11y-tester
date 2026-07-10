@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: keyboard-focusable but AT-invisible</title>
+<style>
+  button:focus, a:focus { outline: 3px solid #06c; }
+</style>
+<!-- The aria-hidden button below is still in the Tab order (tabindex="0"),
+     so the keyboard persona's crawl reaches it and records a step for it,
+     but @guidepup/virtual-screen-reader's census walk skips anything
+     aria-hidden="true" -- so it must fire sr-focusable-not-exposed. The
+     ordinary labeled link must NOT fire (it's in both the trace and the
+     census). -->
+</head>
+<body>
+  <main>
+    <h1>Focusable but hidden from assistive tech</h1>
+    <a href="#ok">Ordinary link</a>
+    <button id="hidden-btn" tabindex="0" aria-hidden="true">Ghost action</button>
+  </main>
+</body>
+</html>
