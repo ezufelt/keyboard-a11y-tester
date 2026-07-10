@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: full-box background-colour fill on focus, high luminance contrast (expect no 1.4.1, no 2.4.13-weak)</title>
+<style>
+  /* Card/large-button pattern: no outline or box-shadow at all -- the whole
+     background swaps colour on focus. The swap is a big luminance jump
+     (light card -> near-black), so it reads as a real lightness change
+     independent of hue: colourblind-safe even without a ring/underline. */
+  button {
+    outline: none;
+    display: block;
+    width: 220px;
+    height: 60px;
+    margin: 40px;
+    background: #f5f5f5;
+    border: none;
+    font-size: 16px;
+    color: #000;
+  }
+  button:focus {
+    background: #141428;
+    color: #fff;
+  }
+</style>
+</head>
+<body>
+  <button id="b1">Card button one</button>
+  <button id="b2">Card button two</button>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: full-box background-colour fill on focus, isoluminant (expect 1.4.1 to fire)</title>
+<style>
+  /* Same card/large-button fill pattern as focus-fill-high-contrast.html, but
+     the two pastel backgrounds are near-isoluminant (~1.05:1 focused/
+     unfocused contrast) -- the only real difference is hue, which a
+     colourblind user may not perceive. No ring/underline either, so there is
+     no colourblind-safe shape cue to fall back on: this should fail 1.4.1. */
+  button {
+    outline: none;
+    display: block;
+    width: 220px;
+    height: 60px;
+    margin: 40px;
+    background: #f8d7da;
+    border: none;
+    font-size: 16px;
+    color: #000;
+  }
+  button:focus {
+    background: #d1e7ff;
+  }
+</style>
+</head>
+<body>
+  <button id="b1">Card button one</button>
+  <button id="b2">Card button two</button>
+</body>
+</html>

@@ -134,13 +134,14 @@ Each entry in `steps[]`:
 | `step_id` | string | `step_NNNN`, 4-digit zero-padded index. |
 | `index` | integer | 1-based. |
 | `keystroke_sent` | string | e.g. `Tab`, `Shift+Tab`, or `type:"<text>"` for typed input. |
-| `active_element_selector` | string | CSS path, or `:root`/`body`. |
+| `active_element_selector` | string | CSS path, or `:root`/`body`. When focus is traced into an iframe (same-origin or cross-origin), `"<outer iframe selector> >>> <inner selector>"`. |
 | `tag` | string \| null | Lowercase tag name. |
 | `tabindex` | integer \| null | Parsed `tabindex` attribute. |
-| `dom_order_index` | integer | Position in `document.querySelectorAll('*')`, or `-1`. |
-| `ax_name_role_state` | `{ name, role, states } \| null` | From the CDP accessibility tree; `states` keys vary per element. |
+| `dom_order_index` | integer | Position in `document.querySelectorAll('*')` (within whichever document the focused element lives in), or `-1`. |
+| `ax_name_role_state` | `{ name, role, states, name_source } \| null` | From the CDP accessibility tree, except inside an iframe: `name_source.type` is `"heuristic"` (label/aria-label/alt/title/text, not full ACCNAME -- ground truth isn't reachable across a cross-origin frame's own target) and `states` is `{}`. |
 | `focus_moved` | boolean | Whether the selector differs from the previous step. |
 | `bounding_box` | `{ x, y, width, height } \| null` | |
+| `ancestor_boxes` | `{ x, y, width, height }[]` | Up to 3 ancestor boxes, capped to ~25x the element's own area, for detecting a `:focus-within`-style indicator on a wrapping container. |
 | `url` | string | Page URL at capture time. |
 | `text` | string | innerText/value/aria-label, trimmed and truncated to 120 chars. |
 | `is_body` | boolean | |
@@ -177,8 +178,9 @@ Each entry in `steps[]`:
 | `style_cue` | boolean | Computed outline/box-shadow declared. |
 | `pixel_cue` | boolean | Pixels changed on focus. |
 | `visible` | boolean | `style_cue \|\| pixel_cue` — the AA pass/fail verdict. |
-| `shape_cue` | boolean | Non-colour-only signal (for 1.4.1). |
-| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"none"` | |
+| `shape_cue` | boolean | Non-colour-only signal (for 1.4.1). `edge` only counts as a shape cue when the interior did NOT also change — a full-box fill lights up the edge bands too (they're subsets of the box) without being a genuine edge/underline. |
+| `indicator` | `"outline"\|"shadow"\|"ring"\|"edge"\|"interior-only"\|"container"\|"detached"\|"none"` | `"container"` means the indicator was only found on an ancestor box, not the focused element itself. `"detached"` means it was found via a bounded pixel search near the element, with no DOM relationship to it at all (e.g. a portaled/absolutely-positioned ring). `"interior-only"` covers both a partial-region change and a full-box fill (e.g. a card/button swapping its whole background colour on focus) — see `color_safe`. |
+| `color_safe` | boolean \| null | Only set when `indicator === "interior-only"`; `null` otherwise. `true` when the fill's focused/unfocused luminance contrast clears the same >= 3:1 bar `focus_appearance.contrast_pass` uses — bright/dark enough to read as a real lightness change independent of hue. `false` (or a fill with no measurable luminance change) feeds the 1.4.1 Use-of-Color finding below. |
 
 When the focus region is too small/indeterminate: `{ visible: null, note: "region too small / indeterminate" }`, and `focus_appearance` is `null`.
 

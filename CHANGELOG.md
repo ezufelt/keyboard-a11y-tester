@@ -20,6 +20,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but
   no author label conveys the field's purpose. Adds an additive `name_source` field (plus
   `input_type` on steps) captured from CDP's winning ACCNAME source.
+- Focus-visible detection now follows focus into `<iframe>` content (same-origin or
+  cross-origin, e.g. an embedded video player), resolving the real inner control via
+  Playwright's frame API instead of stopping at the outer `<iframe>` element. Adds a
+  `<outer selector> >>> <inner selector>` selector convention for iframe-crossed steps and a
+  best-effort (non-ground-truth) `name_source: "heuristic"` for their accessible name, since
+  the real CDP accessibility tree isn't reachable across a cross-origin frame's own target.
+- `ancestor_boxes` (trace step field): up to 3 bounded ancestor boxes per focus stop, so the
+  2.4.7/2.4.13 pixel-diff can also catch a focus indicator rendered on a wrapping
+  `:focus-within` container rather than the focused element itself.
+- When neither the focused element's own box nor any ancestor box shows an indicator, the
+  2.4.7/2.4.13 pixel-diff now also searches a small bounded radius around the element for a
+  connected region of changed pixels (`indicator: "detached"` in the trace). This catches an
+  indicator with no DOM relationship to the control at all — a sibling or portaled overlay
+  repositioned by JS on focus — which the ancestor-box walk above can't find, since it only
+  ever looks up the DOM tree. Still bounded, not a full-frame diff, so unrelated changes
+  elsewhere on the page aren't picked up.
 - New deterministic check, **4.1.2 (AA, screen-reader)**: flags a broken ARIA ID reference —
   `aria-controls`/`aria-describedby`/`aria-details`/`aria-errormessage` whose value contains
   only ID(s) that resolve to no element. Adds an additive `declared_broken_aria_refs` field to
@@ -36,12 +52,40 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only when more than one viewport ran): compares each viewport's census against the others and
   flags a named interactive control present in one but entirely absent from another for the
   same URL, at low confidence (0.4) since this can reflect intentional responsive design.
+- 1.4.1 (Use of Color) now resolves deterministically for a full-box `interior-only` fill (e.g.
+  a card or large button that swaps its whole background colour on focus instead of drawing a
+  ring) instead of always deferring to AI review: a new `color_safe` field on `focus_visible`
+  reuses the existing focused/unfocused luminance-contrast measurement (the same >= 3:1 bar
+  2.4.13 already uses) to tell a real lightness shift (colourblind-safe even with no ring/
+  underline) apart from a near-isoluminant, colour-only change. Confidence raised from 0.3 to
+  0.7 for this finding.
 
 ### Fixed
 - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` descriptions still
   described a keyboard-only-only tool after the 0.2.0 screen-reader persona work; only their
   version numbers had been bumped. Both now mention the screen-reader persona, matching
   `package.json`.
+- 2.4.13 (Focus Appearance) false positive on indicators that reveal/reposition on focus
+  (e.g. an off-canvas skip link that jumps on-screen on `:focus`): once focus moved on, the
+  neighbour-frame baseline showed whatever unrelated content normally renders at that spot,
+  and diffing against it corrupted the measured contrast. The area/contrast measurement now
+  excludes the component's own interior when a ring/edge cue is present, isolating the actual
+  indicator from that incidental content.
+- 2.4.7 (Focus Visible) false positive when the indicator lives on a `:focus-within`
+  container wrapping the control (a common custom-field pattern) rather than the control
+  itself — the pixel-diff only ever looked at the focused element's own (padded) box, so it
+  never saw the wrapper's border and reported "not visible". Falls back to the new
+  `ancestor_boxes` when the element's own box shows no indicator.
+- Focus tracked inside an `<iframe>` no longer gets misattributed to the unmoving `<iframe>`
+  element itself for every control inside it — previously this both hid each inner control's
+  own findings and read as a keyboard trap (2.1.2) to the "focus didn't move" heuristic.
+- A full-box background-colour fill on focus (no ring/underline/outline) was misclassified as
+  an `"edge"` shape cue: the top/bottom edge bands are subsets of the box, so a uniform fill
+  changes them too, same as the interior. This both hid full-fill indicators from the 1.4.1
+  Use-of-Color check entirely and corrupted their 2.4.13 contrast measurement (restricted to a
+  thin perimeter band meant for genuine rings, instead of the real interior change) — a
+  high-contrast fill could be misreported as a "weak" indicator. `edge` now only counts as a
+  shape cue when the interior did *not* also change.
 
 ## [0.2.0]
 

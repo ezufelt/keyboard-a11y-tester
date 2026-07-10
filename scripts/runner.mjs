@@ -146,9 +146,13 @@ function log(...m) {
 
 // Computes a reasonably stable CSS selector + geometry for a given element.
 // Runs in page context; `this` is the element.
+// Takes the element as an explicit parameter (rather than binding \`this\')
+// so the identical source runs two ways: via CDP's Runtime.callFunctionOn
+// (main-frame focus, objectId passed in \`arguments\` alongside \`this\`) and
+// via Playwright's ElementHandle.evaluate (focus recursed into an iframe --
+// see resolveInnerFocus). Both invoke it as fn(el).
 const COLLECT_ACTIVE = /* js */ `
-function () {
-  const el = this;
+function (el) {
   if (!el || el === document.body || el === document.documentElement) {
     return {
       isBody: true,
@@ -219,6 +223,58 @@ function () {
     }
   }
   var region = { landmark: landmark, heading: heading };
+  // Custom controls commonly render their focus indicator on a wrapping
+  // container via :focus-within (a bordered/shadowed field wrapper around a
+  // plain, unstyled input) rather than on the focused element itself. Walk up
+  // a few ancestors so the pixel-diff has a shot at that box too -- capped to
+  // "modestly bigger than the control" so this can't accidentally pick up a
+  // whole-page container like <main> and rubber-stamp every page as visible.
+  var ancestorBoxes = [];
+  var ownArea = Math.max(1, r.width * r.height);
+  var anc = el.parentElement;
+  for (var hop = 0; anc && hop < 3 && anc !== document.body; hop++, anc = anc.parentElement) {
+    var ar = anc.getBoundingClientRect();
+    var area = ar.width * ar.height;
+    if (area < 1 || area > ownArea * 25) continue;
+    if (ar.width > window.innerWidth * 0.9 || ar.height > window.innerHeight * 0.9) continue;
+    ancestorBoxes.push({ x: ar.x, y: ar.y, width: ar.width, height: ar.height });
+  }
+  // Best-effort accessible name/role, used only when focus has been traced
+  // into an iframe (see resolveInnerFocus) -- that element's real CDP
+  // backendNodeId lives in a different target our single CDP session can't
+  // reach (cross-origin frames get their own renderer process), so ground-
+  // truth ACCNAME via Accessibility.getPartialAXTree isn't reachable there.
+  // This is a plain-DOM approximation (label/aria-label/alt/title/text), not
+  // full name computation -- good enough to stop misattributing every
+  // control inside a frame to the outer <iframe> element.
+  function heuristicText(e) { return e ? (e.innerText || '').trim() : ''; }
+  var heuristicName = '';
+  var hLbl = el.getAttribute('aria-label');
+  if (hLbl && hLbl.trim()) heuristicName = hLbl.trim();
+  if (!heuristicName) {
+    var hLbId = el.getAttribute('aria-labelledby');
+    if (hLbId) {
+      heuristicName = hLbId.split(/\\s+/).map(function (id) { return heuristicText(document.getElementById(id)); })
+        .filter(Boolean).join(' ').trim();
+    }
+  }
+  if (!heuristicName && el.id) {
+    var forLabel = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+    if (forLabel) heuristicName = heuristicText(forLabel);
+  }
+  if (!heuristicName) {
+    var wrapLabel = el.closest('label');
+    if (wrapLabel) heuristicName = heuristicText(wrapLabel);
+  }
+  if (!heuristicName && el.tagName === 'IMG' && el.alt) heuristicName = el.alt.trim();
+  if (!heuristicName && el.getAttribute('title')) heuristicName = el.getAttribute('title').trim();
+  if (!heuristicName) heuristicName = heuristicText(el);
+  if (!heuristicName && el.getAttribute('placeholder')) heuristicName = el.getAttribute('placeholder').trim();
+  var heuristicRole = el.getAttribute('role');
+  if (!heuristicRole) {
+    var ROLE_MAP = { a: el.hasAttribute('href') ? 'link' : 'generic', button: 'button', select: 'listbox', textarea: 'textbox', img: 'img' };
+    heuristicRole = ROLE_MAP[el.tagName.toLowerCase()] || (el.tagName.toLowerCase() === 'input' ? (el.getAttribute('type') || 'text') : el.tagName.toLowerCase());
+  }
   return {
     isBody: false,
     selector: cssPath(el),
@@ -226,6 +282,9 @@ function () {
     inputType: el.tagName.toLowerCase() === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
     tabindex: tabindexAttr === null ? null : parseInt(tabindexAttr, 10),
     bbox: { x: r.x, y: r.y, width: r.width, height: r.height },
+    ancestorBoxes,
+    heuristicName: heuristicName.slice(0, 200),
+    heuristicRole,
     domOrderIndex,
     url: location.href,
     text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
@@ -234,6 +293,14 @@ function () {
     region
   };
 }`;
+
+// Real function derived from the COLLECT_ACTIVE source, for the one call site
+// that needs an actual JS value rather than a string: Playwright's
+// ElementHandle.evaluate() serializes a function value's own source into the
+// page and calls it there, but treats a string argument as a bare expression
+// to evaluate (so `handle.evaluate(COLLECT_ACTIVE)` would just resolve the
+// unreferenced function value itself, not call it -- verified empirically).
+const COLLECT_ACTIVE_FN = new Function('el', `return (${COLLECT_ACTIVE})(el);`);
 
 // ---------------------------------------------------------------------------
 // CDP helpers
@@ -287,8 +354,48 @@ async function axForBackendNode(cdp, backendNodeId) {
   }
 }
 
+// Blind Tab-crawling can land focus inside an <iframe> (same-origin OR
+// cross-origin, e.g. an embedded video player). document.activeElement in the
+// TOP document then IS the <iframe> element itself and stays that way for
+// every Tab press while focus actually moves among controls inside it -- our
+// single CDP session is bound to the top page's target and structurally can't
+// see inside a cross-origin iframe's own (separate-process) target. Left
+// unhandled, every control inside gets misattributed to the same unmoving
+// <iframe> selector, which both hides its own findings and reads as a
+// keyboard trap (>=3 consecutive "focus didn't move" steps) to the 2.1.2 check.
+//
+// Playwright's own Frame/ElementHandle API *can* reach into an OOPIF (it
+// attaches to the sub-target internally), so once CDP tells us focus landed
+// on an iframe, re-resolve document.activeElement through Playwright instead,
+// recursing through nested iframes. If that resolution fails for any reason
+// (frame not yet attached, cross-origin content still loading), we fall back
+// to reporting the iframe element itself -- exactly today's behaviour, never
+// worse.
+const MAX_FRAME_HOPS = 8;
+
+async function resolveInnerFocus(page) {
+  let frame = page.mainFrame();
+  let handle = await frame.evaluateHandle(() => document.activeElement).catch(() => null);
+  let crossedFrame = false;
+  for (let hop = 0; hop < MAX_FRAME_HOPS; hop++) {
+    const el = handle && handle.asElement();
+    if (!el) break;
+    const tag = await el.evaluate((n) => n.tagName).catch(() => null);
+    if (tag !== 'IFRAME' && tag !== 'FRAME') break;
+    const child = await el.contentFrame().catch(() => null);
+    if (!child) break; // cross-origin content not attached / not yet loaded
+    const childHandle = await child.evaluateHandle(() => document.activeElement).catch(() => null);
+    if (!childHandle) break;
+    await handle.dispose().catch(() => {});
+    handle = childHandle;
+    frame = child;
+    crossedFrame = true;
+  }
+  return { handle, frame, crossedFrame };
+}
+
 // Collects selector/geometry + AX for whatever currently has focus.
-async function captureFocused(cdp) {
+async function captureFocused(cdp, page) {
   const objectId = await activeElementObjectId(cdp);
   if (!objectId) {
     return { isBody: true, selector: 'body', ax: null };
@@ -298,6 +405,7 @@ async function captureFocused(cdp) {
     const { result } = await cdp.send('Runtime.callFunctionOn', {
       objectId,
       functionDeclaration: COLLECT_ACTIVE,
+      arguments: [{ objectId }],
       returnByValue: true,
     });
     geom = result.value;
@@ -313,6 +421,49 @@ async function captureFocused(cdp) {
   } finally {
     await cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
   }
+
+  if (!geom.isBody && geom.tag === 'iframe' && page) {
+    const { handle, crossedFrame } = await resolveInnerFocus(page);
+    if (crossedFrame) {
+      try {
+        const innerGeom = await handle.evaluate(COLLECT_ACTIVE_FN);
+        if (!innerGeom.isBody) {
+          // The inner element's own getBoundingClientRect() (and therefore its
+          // ancestorBoxes, computed the same way) is local to its frame's
+          // viewport; Playwright's boundingBox() is page-relative (it accounts
+          // for every ancestor frame's own offset/scroll). Drop ancestorBoxes
+          // rather than pass through frame-local coordinates that would
+          // silently point at the wrong place in the page-level screenshot.
+          const box = await handle.asElement().boundingBox().catch(() => null);
+          geom = {
+            ...innerGeom,
+            bbox: box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null,
+            ancestorBoxes: [],
+            selector: `${geom.selector} >>> ${innerGeom.selector}`,
+            // innerGeom.url is the IFRAME's OWN document location -- every
+            // embedded iframe naturally has a different src URL than the top
+            // page, which is not a context change by any meaningful reading of
+            // 3.2.1 (the user never left the page they're on). Keep the outer,
+            // top-level URL so that check only fires on a real top-level nav.
+            url: geom.url,
+          };
+          // Ground-truth ACCNAME isn't reachable here (see resolveInnerFocus) --
+          // use the plain-DOM heuristic computed alongside the rest of geom.
+          ax = {
+            role: innerGeom.heuristicRole ?? null,
+            name: innerGeom.heuristicName || null,
+            name_source: { type: 'heuristic', attribute: null, native: null },
+            ignored: false,
+            states: {},
+          };
+        }
+      } catch {
+        /* keep the outer <iframe> as the reported target -- today's behaviour */
+      }
+    }
+    await handle?.dispose().catch(() => {});
+  }
+
   return { ...geom, ax };
 }
 
@@ -611,9 +762,39 @@ function focusMetrics(focusedPng, baselinePng, box) {
   const B = cropPng(baselinePng, region);
   const w = Math.min(A.width, B.width);
   const h = Math.min(A.height, B.height);
+  // When a ring/edge cue is present, restrict this measurement to the
+  // perimeter band and skip the component's own interior. Reveal/reposition
+  // patterns (e.g. an off-canvas skip link that jumps on-screen on :focus)
+  // uncover whatever unrelated content normally renders at that spot once
+  // focus moves on, so diffing the full interior mixes the ring's true
+  // contrast with that incidental content and produces a bogus ratio. A pure
+  // interior-fill indicator (no ring/edge) has no such exterior noise to
+  // avoid, so it keeps measuring the whole region as before.
+  //
+  // A full-box fill (e.g. a card/button swapping its whole background colour
+  // on focus) also crosses the edge floor -- the top/bottom bands are subsets
+  // of the box, so they read the same near-100% change as the interior. That
+  // is NOT a ring/underline: `interior` also being at the floor is precisely
+  // what tells the two apart, so only treat it as ring-like when the edge
+  // band changed WITHOUT the interior changing along with it.
+  const ringLike = borderBand >= PRESENCE_FLOOR || (edge >= PRESENCE_FLOOR && interior < PRESENCE_FLOOR);
+  const rx = Math.min(Math.max(0, Math.floor(region.x)), Math.max(0, focusedPng.width - 1));
+  const ry = Math.min(Math.max(0, Math.floor(region.y)), Math.max(0, focusedPng.height - 1));
+  // Shrunk 2px in from the reported border-box on each side: subpixel layout
+  // (fractional getBoundingClientRect vs the integer screenshot pixel grid)
+  // means the rasterized outline can bleed a pixel or two inside the nominal
+  // edge, so excluding right up to that edge undercounts a real ring's own
+  // pixels. The reveal-pattern contamination this branch exists to dodge
+  // involves the whole interior, so a couple of edge pixels back makes no
+  // difference there.
+  const EDGE_MARGIN = 2;
+  const ix0 = box.x - rx + EDGE_MARGIN, iy0 = box.y - ry + EDGE_MARGIN;
+  const ix1 = ix0 + Math.max(0, box.width - 2 * EDGE_MARGIN), iy1 = iy0 + Math.max(0, box.height - 2 * EDGE_MARGIN);
   let changedArea = 0, fLum = 0, bLum = 0;
   for (let y = 0; y < h; y++) {
+    const insideInteriorY = ringLike && y >= iy0 && y < iy1;
     for (let x = 0; x < w; x++) {
+      if (insideInteriorY && x >= ix0 && x < ix1) continue; // perimeter only
       const iA = (y * A.width + x) * 4;
       const iB = (y * B.width + x) * 4;
       const d = Math.max(
@@ -648,6 +829,80 @@ function focusMetrics(focusedPng, baselinePng, box) {
   };
 }
 
+// A real focus indicator, however implemented (CSS ring on the element,
+// :focus-within on a wrapper, or a decoupled/portaled overlay positioned by
+// JS), renders close to the control it indicates -- so a small fixed search
+// margin around the element's own box catches genuinely detached
+// implementations (an absolutely-positioned ring that isn't a DOM ancestor
+// at all) without reopening full-frame diffing to every unrelated change
+// elsewhere on the page.
+const NEARBY_SEARCH_MARGIN = 40;
+const MIN_COMPONENT_PIXELS = 12;
+
+// Searches a bounded window around the element's own box for a focus
+// indicator that has no DOM relationship to it at all -- a sibling or
+// portaled overlay repositioned by JS on focus, which the ancestor-box walk
+// (finalizeFocusVisible) structurally cannot find since it only looks up the
+// DOM tree. Builds a changed-pixel mask over the window (same per-pixel
+// threshold as the AAA loop above), flood-fills it into connected
+// components, and returns the largest surviving one's bounding box -- or
+// null if nothing but noise changed nearby.
+function findNearbyIndicatorBox(focusedPng, baselinePng, ownBox) {
+  const frameW = Math.min(focusedPng.width, baselinePng.width);
+  const frameH = Math.min(focusedPng.height, baselinePng.height);
+  const win = inflate(ownBox, NEARBY_SEARCH_MARGIN);
+  const x0 = Math.min(Math.max(0, Math.floor(win.x)), Math.max(0, frameW - 1));
+  const y0 = Math.min(Math.max(0, Math.floor(win.y)), Math.max(0, frameH - 1));
+  const x1 = Math.max(x0 + 1, Math.min(frameW, Math.ceil(win.x + win.width)));
+  const y1 = Math.max(y0 + 1, Math.min(frameH, Math.ceil(win.y + win.height)));
+  const w = x1 - x0, h = y1 - y0;
+  if (w < 1 || h < 1) return null;
+
+  const changed = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const fx = x0 + x, fy = y0 + y;
+      const iA = (fy * focusedPng.width + fx) * 4;
+      const iB = (fy * baselinePng.width + fx) * 4;
+      const d = Math.max(
+        Math.abs(focusedPng.data[iA] - baselinePng.data[iB]),
+        Math.abs(focusedPng.data[iA + 1] - baselinePng.data[iB + 1]),
+        Math.abs(focusedPng.data[iA + 2] - baselinePng.data[iB + 2])
+      );
+      if (d > 32) changed[y * w + x] = 1;
+    }
+  }
+
+  // 4-connected flood fill (iterative, no recursion) -- keep the largest
+  // component above the noise floor.
+  const visited = new Uint8Array(w * h);
+  let best = null;
+  const stack = [];
+  for (let start = 0; start < w * h; start++) {
+    if (!changed[start] || visited[start]) continue;
+    let count = 0, minX = w, minY = h, maxX = 0, maxY = 0;
+    stack.push(start);
+    visited[start] = 1;
+    while (stack.length) {
+      const p = stack.pop();
+      const px = p % w, py = (p / w) | 0;
+      count++;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+      if (px > 0 && changed[p - 1] && !visited[p - 1]) { visited[p - 1] = 1; stack.push(p - 1); }
+      if (px < w - 1 && changed[p + 1] && !visited[p + 1]) { visited[p + 1] = 1; stack.push(p + 1); }
+      if (py > 0 && changed[p - w] && !visited[p - w]) { visited[p - w] = 1; stack.push(p - w); }
+      if (py < h - 1 && changed[p + w] && !visited[p + w]) { visited[p + w] = 1; stack.push(p + w); }
+    }
+    if (count >= MIN_COMPONENT_PIXELS && (!best || count > best.count)) {
+      best = { count, box: { x: x0 + minX, y: y0 + minY, width: maxX - minX + 1, height: maxY - minY + 1 } };
+    }
+  }
+  return best ? best.box : null;
+}
+
 // ---------------------------------------------------------------------------
 // Step capture (shared by the blind Tab-crawl and the AI-driven mode)
 // ---------------------------------------------------------------------------
@@ -657,7 +912,7 @@ function focusMetrics(focusedPng, baselinePng, box) {
 // locator region, and a focused-region screenshot; appends the full frame for
 // the focus-visible neighbour diff. Returns { step, contextChange }.
 async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevStep, startUrl, fullFrames, persona = 'all', srState }) {
-  const focused = await captureFocused(cdp);
+  const focused = await captureFocused(cdp, page);
   const focusMoved = !prevStep || prevStep.active_element_selector !== focused.selector;
   let contextChange = null;
   if (focused.url && focused.url !== startUrl) {
@@ -699,6 +954,7 @@ async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevSte
       : null,
     focus_moved: focusMoved,
     bounding_box: focused.bbox ?? null,
+    ancestor_boxes: focused.ancestorBoxes ?? [],
     url: focused.url ?? startUrl,
     text: focused.text ?? '',
     is_body: !!focused.isBody,
@@ -757,7 +1013,31 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
     const s = steps[n];
     if (!s.bounding_box || s.is_body) continue;
     const baseline = fullFrames[n + 1] || restPng;
-    const m = focusMetrics(fullFrames[n], baseline, s.bounding_box);
+    let m = focusMetrics(fullFrames[n], baseline, s.bounding_box);
+    // Custom controls often carry their focus indicator on a wrapping
+    // container (:focus-within border/shadow on a field wrapper) rather than
+    // the focused element itself, which the element's own box never sees no
+    // matter how far it's padded out. Only reached for ancestors, so a
+    // neighbouring/sibling element's unrelated change can't leak in here the
+    // way it can from blindly widening the search radius.
+    let indicatorSource = 'own';
+    if ((m === null || !m.visible) && s.ancestor_boxes && s.ancestor_boxes.length) {
+      for (const abox of s.ancestor_boxes) {
+        const am = focusMetrics(fullFrames[n], baseline, abox);
+        if (am && am.visible && (m === null || !m.visible)) { m = am; indicatorSource = 'container'; break; }
+      }
+    }
+    // Neither the element's own box nor any DOM ancestor showed an indicator --
+    // last resort, search a small bounded radius around the element for one
+    // that has no DOM relationship to it at all (a sibling or portaled overlay
+    // repositioned by JS on focus, e.g. an absolutely-positioned custom ring).
+    if (m === null || !m.visible) {
+      const nearbyBox = findNearbyIndicatorBox(fullFrames[n], baseline, s.bounding_box);
+      if (nearbyBox) {
+        const nm = focusMetrics(fullFrames[n], baseline, nearbyBox);
+        if (nm && nm.visible) { m = nm; indicatorSource = 'nearby'; }
+      }
+    }
     if (m === null) {
       s.focus_visible = { visible: null, note: 'region too small / indeterminate' };
       s.focus_appearance = null;
@@ -773,12 +1053,28 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
       const visible = styleCue || pixelCue;
       // 1.4.1 classification: a shape cue (outline/shadow/underline/border) is
       // colourblind-safe; interior-only may be a safe fill OR colour-only.
-      const shapeCue = styleCue || m.borderBand >= PRESENCE_FLOOR || m.edge >= PRESENCE_FLOOR;
+      // A full-box fill also lights up the edge bands (they're subsets of the
+      // box, so a uniform change covers them too) -- that's not a genuine
+      // edge/underline shape, so only count `edge` as a shape cue when the
+      // interior *didn't* change along with it. See the matching `ringLike`
+      // note on focusMetrics() above.
+      const fillCue = m.interior >= PRESENCE_FLOOR;
+      const edgeOnlyCue = m.edge >= PRESENCE_FLOOR && !fillCue;
+      const shapeCue = styleCue || m.borderBand >= PRESENCE_FLOOR || edgeOnlyCue;
       let indicator = 'none';
-      if (styleCue) indicator = cfs.has_outline ? 'outline' : 'shadow';
+      if (indicatorSource === 'container') indicator = 'container';
+      else if (indicatorSource === 'nearby') indicator = 'detached';
+      else if (styleCue) indicator = cfs.has_outline ? 'outline' : 'shadow';
       else if (m.borderBand >= PRESENCE_FLOOR) indicator = 'ring';
-      else if (m.edge >= PRESENCE_FLOOR) indicator = 'edge';
-      else if (m.interior >= PRESENCE_FLOOR) indicator = 'interior-only';
+      else if (edgeOnlyCue) indicator = 'edge';
+      else if (fillCue) indicator = 'interior-only';
+      // For an interior-only fill, reuse the AAA focused/unfocused luminance
+      // ratio (>= 3:1, the same bar 2.4.13 uses) as the 1.4.1 signal: a fill
+      // that shifts brightness enough to clear it reads as a real lightness
+      // change independent of hue, so it isn't "colour is the only cue" even
+      // without a ring/underline. Below the bar (or no measurable luminance
+      // change at all), treat it as unresolved/colour-only.
+      const colorSafe = indicator === 'interior-only' ? m.aaa.contrast_pass === true : null;
       s.focus_visible = {
         border_band: Number(m.borderBand.toFixed(4)),
         interior: Number(m.interior.toFixed(4)),
@@ -788,6 +1084,7 @@ function finalizeFocusVisible(steps, fullFrames, restPng) {
         visible,                 // AA (2.4.7): present if either cue
         shape_cue: shapeCue,
         indicator,
+        color_safe: colorSafe,   // 1.4.1: null unless indicator === 'interior-only'
       };
       // AAA (2.4.13) is only meaningful when an indicator is present. Informative.
       s.focus_appearance = visible
@@ -924,24 +1221,31 @@ function deriveFindingsKeyboard({ steps, startUrl, contextChangeOnFocus }, { vie
 
   // --- 1.4.1 Use of Color: focus indicator appears to be interior-only ----
   // Visible on focus, but the change is inside the box with no shape cue
-  // (ring/underline/border). That may be a colourblind-safe luminance fill OR
-  // a colour-only change that fails 1.4.1. Deterministic layer can't tell hue
-  // from luminance — flagged low-confidence for the AI layer to judge.
+  // (ring/underline/border) -- e.g. a card or large button that swaps its
+  // whole background colour on focus instead of drawing a ring. That may be a
+  // colourblind-safe luminance fill OR a colour-only change that fails 1.4.1.
+  // `color_safe` (focusMetrics' focused/unfocused luminance ratio, >= 3:1 --
+  // the same bar 2.4.13 uses) tells the two apart: a fill bright/dark enough
+  // to clear it reads as a real lightness change independent of hue, so only
+  // fills that DON'T clear it (or have no measurable luminance change at all)
+  // are flagged here.
   const colourOnly = focusStops.filter(
-    (s) => s.focus_visible && s.focus_visible.visible === true && s.focus_visible.shape_cue === false
+    (s) => s.focus_visible && s.focus_visible.visible === true &&
+      s.focus_visible.shape_cue === false && s.focus_visible.color_safe !== true
   );
   if (colourOnly.length) {
     findings.push(
       makeFinding({
         id: `focus-indicator-color-only-${viewport}`,
         wcag: '1.4.1',
-        confidence: 0.3,
+        confidence: 0.7,
         viewport,
         goalId,
         ...locate(colourOnly, startUrl),
-        summary: `${colourOnly.length} focus stop(s) show only an interior change with no shape cue ` +
-          `(no outline/underline/border). Needs AI review: a colour-only indicator fails 1.4.1 for users ` +
-          `who cannot perceive the hue difference. e.g. ${colourOnly.slice(0, 5).map((s) => s.active_element_selector).join(', ')}`,
+        summary: `${colourOnly.length} focus stop(s) show only an interior fill change with no shape cue ` +
+          `(no outline/underline/border) and < 3:1 focused/unfocused luminance contrast: a colour-only ` +
+          `indicator fails 1.4.1 for users who cannot perceive the hue difference. ` +
+          `e.g. ${colourOnly.slice(0, 5).map((s) => s.active_element_selector).join(', ')}`,
         impact: 'A keyboard user with colour blindness may not perceive which control has focus if the only ' +
           'change is colour.',
         evidence: colourOnly.slice(0, 10).map((s) => s.step_id),
@@ -1736,7 +2040,7 @@ async function cmdServe(args) {
 
 async function cmdObserve(args) {
   const { browser, cdp, page, session } = await connectSession(args._[1]);
-  const focused = await captureFocused(cdp);
+  const focused = await captureFocused(cdp, page);
   const obs = {
     index: session.index,
     note: 'current state (no keystroke sent)',
@@ -1783,7 +2087,7 @@ async function cmdStep(args) {
   }
 
   const persona = session.persona || 'all';
-  const focused = await captureFocused(cdp);
+  const focused = await captureFocused(cdp, page);
   const prev = steps[steps.length - 1];
 
   let shotRel = null;
@@ -1812,7 +2116,8 @@ async function cmdStep(args) {
     dom_order_index: focused.domOrderIndex ?? -1,
     ax_name_role_state: focused.ax ? { name: focused.ax.name, role: focused.ax.role, states: focused.ax.states } : null,
     focus_moved: !prev || prev.active_element_selector !== focused.selector,
-    bounding_box: focused.bbox ?? null, url: focused.url ?? session.startUrl,
+    bounding_box: focused.bbox ?? null, ancestor_boxes: focused.ancestorBoxes ?? [],
+    url: focused.url ?? session.startUrl,
     text: focused.text ?? '', is_body: !!focused.isBody,
     computed_focus_style: focused.focusStyle ?? null, region: focused.region ?? null,
     focused_region_screenshot: shotRel, focus_visible: null,
