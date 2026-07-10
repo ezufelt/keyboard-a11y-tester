@@ -19,6 +19,10 @@ and `@guidepup/virtual-screen-reader`, needs no bundled test cases, and writes a
 to a per-user **temp directory** (never into this folder). The screen-reader persona
 never drives a real screen reader (NVDA/VoiceOver) — see "Screen-reader detection" below.
 
+**Documentation:** [`docs/usage.md`](docs/usage.md) (setup, dependencies, quick start,
+CAPTCHAs) · [`docs/interface.md`](docs/interface.md) (full CLI reference, output file
+schema, WCAG checks table).
+
 ## Quick start
 
 **As a Claude Code plugin** — register this repo as a plugin marketplace, then install it:
@@ -45,42 +49,11 @@ Then drive it directly (see [Run against any URL](#run-against-any-url-no-test-f
 
 ## Requirements & dependencies
 
-**Runtime:**
-- **Node.js ≥ 18** (declared in `package.json` `engines`; ES modules — the package is `"type": "module"`)
-- **Chromium** — installed via Playwright (`npx playwright install chromium`), not bundled
+Requires **Node.js ≥ 20** and Chromium (via Playwright), plus five small npm dependencies —
+no build step. Run `node scripts/setup-check.mjs` to verify both before your first run.
 
-**npm dependencies** (installed by `npm install`):
-
-| Package | Version | Why |
-|---------|---------|-----|
-| `playwright` | ^1.48.0 | Drives full Chromium keyboard-only and reads the CDP accessibility tree |
-| `pngjs` | ^7.0.0 | Decodes the per-step screenshots for pixel comparison |
-| `pixelmatch` | ^7.2.0 | Diffs focused vs. baseline frames to detect focus-indicator pixel changes |
-| `yaml` | ^2.5.0 | Parses saved scenario `*.test.yaml` files |
-| `@guidepup/virtual-screen-reader` | ^0.32.1 | Builds an ARIA/ACCNAME accessibility tree over the live page and emulates screen-reader announcements + live-region monitoring, for the screen-reader persona |
-
-There are **no runtime dependencies beyond these five** and no build step — the runner is
-plain `.mjs` executed directly by Node (the screen-reader library ships a pre-bundled
-browser ESM file, so no bundler was added). Run `node scripts/setup-check.mjs` to verify
-both the npm deps and a working Chromium before your first run.
-
-This project builds on [Guidepup](https://github.com/guidepup)'s
-[`@guidepup/virtual-screen-reader`](https://github.com/guidepup/virtual-screen-reader)
-(MIT license) for the screen-reader persona's accessible-name/role computation and
-live-region monitoring — credit to Craig Morten and the Guidepup project. See
-"Screen-reader detection (Lakshmi)" below for how it's used and its limitations.
-
-## Setup
-
-```bash
-node scripts/setup-check.mjs          # reports what's installed (deps + Chromium)
-npm install                           # if deps are missing
-npx playwright install chromium       # if the browser is missing
-```
-
-`setup-check.mjs` prints JSON (`deps_installed`, `browser_available`) and actually launches
-Chromium to verify real access. When run as a skill, the agent runs this first and **asks
-before installing** anything that's missing.
+See [`docs/usage.md`](docs/usage.md#requirements--dependencies) for the full dependency
+table, licensing credit for `@guidepup/virtual-screen-reader`, and setup instructions.
 
 ## Run against any URL (no test file needed)
 
@@ -100,19 +73,9 @@ node scripts/runner.mjs finish  <session-dir>                  # writes trace + 
 node scripts/runner.mjs stop    <session-dir>
 ```
 
-Options: `--out <dir>` (override the temp output root), `--viewport desktop|mobile`,
-`--max-steps <n>` (blind crawl), `--port <n>` (session), `--persona keyboard|screen-reader|all`
-(default `all` — both personas in one pass). Keys:
-`Tab Shift+Tab Enter Space Escape ArrowUp ArrowDown ArrowLeft ArrowRight Home End`; text is
-entered with `--type` (real keyboard typing, never `.fill()`). Run each viewport separately.
-
-**The live loop is agentic, not scripted:** each `step` prints an observation (focused
-accessible name/role/state, URL, computed focus style, screenshot path); the agent reads it
-and decides the next keystroke. Never drive a counted sequence of Tabs — tab **until** the
-focused control matches by name/role. State persists in the browser across `step` calls.
-
-Optional: instead of `--url` you can pass a saved scenario file (see
-`test-cases/TEMPLATE.test.yaml`).
+See [`docs/usage.md`](docs/usage.md#run-against-any-url-no-test-file-needed) for the full
+quick-start walkthrough, and [`docs/interface.md`](docs/interface.md) for every CLI flag and
+the complete output file schema.
 
 ## What the runner does (deterministic layer)
 
@@ -131,46 +94,31 @@ informative.**
 
 | WCAG | Level | Persona | Check |
 |------|-------|---------|-------|
-| 2.4.7 | AA | keyboard | Focus indicator **present** — a declared `outline`/`box-shadow` in the computed style, or a pixel change on focus. (2.4.7 sets no size/contrast bar.) |
-| 2.4.13 | AAA (informative) | keyboard | Focus indicator **strength** — changed area ≥ a 2px-thick perimeter **and** ≥ 3:1 focused/unfocused contrast. Advisory, never a fail. |
-| 1.4.1 | AA | keyboard | Indicator is not colour-only (a shape cue exists) |
-| 2.1.2 | AA | keyboard | Keyboard trap — focus stalls for several consecutive Tabs |
-| 2.4.1 | AA | keyboard | No skip link near the top of the tab order |
-| 2.4.3 | AA | keyboard | Positive `tabindex` (logical/visual order is an AI check) |
-| 3.2.1 | AA | keyboard | Context change (navigation) from focus alone |
-| 3.3.2 | AA | keyboard | File input named only by the user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but no author label conveys the field's purpose |
-| 4.1.2 | AA | keyboard | Focusable control with no accessible name (blocks speech control) |
-| 1.1.1 | AA | screen-reader | Image/graphic with no accessible name (missing alt text/aria-label) |
-| 1.3.1 | AA | screen-reader | Heading level skip (jumps past one or more levels) |
-| 1.3.1 | AA | screen-reader | Duplicate, unlabeled landmark roles (can't be told apart by role alone) |
-| 4.1.2 | AA | screen-reader | Interactive control whose whole announcement is a bare role — reading-order superset of the keyboard-persona 4.1.2 check, also catches arrow-key browse-mode-only controls |
-| 4.1.3 | AA | screen-reader | A declared live region (`aria-live`/`role=status\|alert\|log\|alertdialog`) that never announced anything all session |
+| 2.4.7 | AA | keyboard | Focus indicator present |
+| 2.4.13 | AAA (informative) | keyboard | Focus indicator strength |
+| 1.4.1 | AA | keyboard | Indicator is not colour-only |
+| 2.1.2 | AA | keyboard | Keyboard trap |
+| 2.4.1 | AA | keyboard | No skip link |
+| 2.4.3 | AA | keyboard | Positive `tabindex` |
+| 3.2.1 | AA | keyboard | Context change from focus alone |
+| 3.3.2 | AA | keyboard | File input named only by the user-agent default ("Choose File") |
+| 4.1.2 | AA | keyboard | Focusable control with no accessible name |
+| 1.1.1 | AA | screen-reader | Missing alt text/aria-label |
+| 1.3.1 | AA | screen-reader | Heading level skip |
+| 1.3.1 | AA | screen-reader | Duplicate, unlabeled landmark roles |
+| 4.1.2 | AA | screen-reader | Interactive control announced as a bare role |
+| 4.1.3 | AA | screen-reader | Declared live region that never announced anything |
 
-The scenario-level verdicts — "was every control *needed to complete the goal* reachable"
-(2.1.1) and "no trap *on the path*" (full 2.1.2) — need the AI-driven goal path, so the
-agent produces them from the trace. The 2.4.1 / 4.1.2 keyboard-persona checks directly
-support the W3C keyboard+speech persona ("Ade",
-<https://www.w3.org/WAI/people-use-web/user-stories/story-one/>); the screen-reader-persona
-checks support the W3C blind/screen-reader persona ("Lakshmi",
-<https://www.w3.org/WAI/people-use-web/user-stories/story-three/>).
+See [`docs/interface.md`](docs/interface.md#wcag-checks) for the authoritative version of
+this table (full check descriptions) and the W3C persona references.
 
 ## Output
 
 Everything is written under a per-user temp dir (`${TMPDIR}/keyboard-a11y-tester/…`, or
-`--out`):
-
-```
-<out>/<site-or-case-id>/
-  <viewport>/
-    trace.json                    # per-step evidence: keystroke, selector, AX name/role/state, focus style, bbox, focus_visible, sr_announcement, screenshot ref
-    deterministic-findings.json   # findings: wcag, persona, evidence_kind, conformance_level, confidence, severity, url, locations, evidence[]
-    screen-reader-census.json     # (screen-reader persona) reading-order entries + declared live regions, per page URL visited
-    screenshots/step_NNNN.png     # focused-region crop (inflated to include the focus ring); keyboard persona only
-```
-
-Every finding references its evidence (a step id, or — for screen-reader census-sourced
-findings — a page selector), carries a confidence score and severity, names the page URL,
-and maps to a specific WCAG success criterion.
+`--out`): a `trace.json` (per-step evidence), `deterministic-findings.json` (WCAG findings),
+`screen-reader-census.json` (screen-reader persona), and cropped `screenshots/step_NNNN.png`
+per viewport. See [`docs/interface.md`](docs/interface.md#output-file-schema) for the
+complete directory layout and field-by-field schema of every output file.
 
 ## Focus-visible detection (2.4.7 AA presence + 2.4.13 AAA strength)
 
@@ -227,11 +175,8 @@ specific quirks of any one real screen reader implementation.
 
 ## CAPTCHAs
 
-CAPTCHAs detect automation (`navigator.webdriver`) and refuse to run. The runner
-automatically suppresses that one signal **only on a page where a CAPTCHA is present**
-(page-scoped) and reloads so the CAPTCHA can initialize and be tested; every other page
-keeps the honest signal. Fully passing an enterprise CAPTCHA from automation is unreliable
-by design.
+CAPTCHAs detect automation and refuse to run; the runner has a page-scoped, human-approved
+compatibility workaround. See [`docs/usage.md`](docs/usage.md#captchas) for details.
 
 ## License
 
