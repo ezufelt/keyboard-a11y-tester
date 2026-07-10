@@ -15,6 +15,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI now also runs `scripts/setup-check.mjs` and the linter, in addition to the functional
   test suite.
 
+### Fixed
+- `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` descriptions still
+  described a keyboard-only-only tool after the 0.2.0 screen-reader persona work; only their
+  version numbers had been bumped. Both now mention the screen-reader persona, matching
+  `package.json`.
+
 ## [0.2.0]
 
 ### Added
