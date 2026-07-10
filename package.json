@@ -35,7 +35,8 @@
     "keyboard-a11y-runner": "scripts/runner.mjs"
   },
   "scripts": {
-    "postinstall-browsers": "playwright install --with-deps chromium"
+    "postinstall-browsers": "playwright install --with-deps chromium",
+    "test": "playwright test"
   },
   "dependencies": {
     "@guidepup/virtual-screen-reader": "^0.32.1",
@@ -43,5 +44,8 @@
     "playwright": "^1.48.0",
     "pngjs": "^7.0.0",
     "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

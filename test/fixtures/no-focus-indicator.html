@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: no focus indicator</title>
+<style>
+  /* Deliberately suppress every focus cue -- no outline, no shadow, no fill
+     change -- so 2.4.7 (Focus Visible) must fail on these controls. */
+  button, a { outline: none; }
+  button:focus, a:focus { outline: none; box-shadow: none; background: inherit; }
+</style>
+</head>
+<body>
+  <button id="b1">First</button>
+  <button id="b2">Second</button>
+  <a id="a1" href="#nowhere">A link</a>
+</body>
+</html>
