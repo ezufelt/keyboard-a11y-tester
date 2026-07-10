@@ -71,6 +71,12 @@ sequence of Tabs.** "Tab 6 times" is wrong; "Tab *until the focused control is n
    or `--persona screen-reader` (no pixel/focus-indicator work, no `:focus-visible` startup gate —
    irrelevant to a blind persona).
 
+   To test a page that requires login, pass `--storage-state <file>` with a saved Playwright
+   storageState JSON (cookies + localStorage from an already-authenticated session). It's applied
+   once when the session's browser launches, and the state stays alive for every `step` after that
+   — no need to re-authenticate mid-session. A missing or invalid file fails immediately rather
+   than silently testing the logged-out page.
+
 2. **Observe / step.** Each `step` performs ONE key and prints an observation: the focused
    element's accessible **name / role / states**, the **URL**, its **computed focus style**
    (`has_outline`/`has_shadow`), a **screenshot path**, and whether focus moved. When the

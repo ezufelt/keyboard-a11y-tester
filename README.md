@@ -77,6 +77,22 @@ See [`docs/usage.md`](docs/usage.md#run-against-any-url-no-test-file-needed) for
 quick-start walkthrough, and [`docs/interface.md`](docs/interface.md) for every CLI flag and
 the complete output file schema.
 
+### Authenticated runs
+
+Pages behind a login can't be tested with a fresh, logged-out browser. Pass a Playwright
+`storageState` JSON file with `--storage-state <file>` to start the browser with its cookies
+and localStorage already loaded (e.g. an already-logged-in session). Generate one with
+`context.storageState({ path: 'auth.json' })` or `npx playwright codegen --save-storage=auth.json <url>`.
+The file is validated (exists, parses as JSON, and looks like a real storageState export —
+i.e. has `cookies`/`origins` arrays) before the browser launches — a missing or malformed file
+fails the run immediately rather than silently testing the logged-out site. In `serve` mode
+it's applied once at launch and the session browser keeps the state alive for every subsequent
+`step`.
+
+**A storageState file holds live session cookies/tokens — treat it as a secret.** Don't commit
+it; `.gitignore` already excludes `auth.json`, `storageState.json`, and `*storage-state*.json`,
+but a differently-named file won't be caught automatically.
+
 ## What the runner does (deterministic layer)
 
 Playwright (full Chromium, new-headless + SwiftShader for real pixels) drives the page with

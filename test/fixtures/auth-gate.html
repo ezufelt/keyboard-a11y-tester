@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: auth-gated content (rendered content depends on localStorage authToken)</title>
+<style>
+  a:focus, button:focus { outline: 3px solid #06c; }
+</style>
+</head>
+<body>
+  <main id="main">
+    <h1>Auth-gated fixture</h1>
+    <div id="gate"></div>
+  </main>
+  <script>
+    // Renders different focusable content depending on whether a --storage-state
+    // file seeded localStorage before this page loaded — this is what the tests
+    // in storage-state.spec.js use to prove the state was actually applied.
+    var gate = document.getElementById('gate');
+    if (localStorage.getItem('authToken')) {
+      gate.innerHTML = '<button id="secret">Secret dashboard</button>';
+    } else {
+      gate.innerHTML = '<a id="locked" href="#">Please log in</a>';
+    }
+  </script>
+</body>
+</html>

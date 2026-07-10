@@ -5,3 +5,9 @@ out-*/
 .DS_Store
 test-results/
 playwright-report/
+
+# Playwright storageState files (--storage-state) hold live session
+# cookies/tokens — never commit one.
+auth.json
+storageState.json
+*storage-state*.json
