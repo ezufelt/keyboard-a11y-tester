@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixture: content diverges between viewports</title>
+<style>
+  button:focus, a:focus { outline: 3px solid #06c; }
+  /* "Advanced search" is display:none below 600px with no ARIA-exposed
+     equivalent -- it's entirely gone from the mobile accessibility tree
+     (not just visually hidden-but-announced), so the cross-viewport census
+     comparison must flag it as present on desktop (1280px) only. */
+  @media (max-width: 600px) {
+    #advanced-search { display: none; }
+  }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Search</h1>
+    <label>Query <input type="text" id="q"></label>
+    <button type="submit">Search</button>
+    <button id="advanced-search">Advanced search</button>
+  </main>
+</body>
+</html>

@@ -14,9 +14,11 @@ node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) \
 
 Runs an unattended Tab-crawl of the start page for each matching viewport, then writes
 `trace.json`, `deterministic-findings.json`, `screen-reader-census.json` (if the
-screen-reader persona ran), and a `run-summary.json` covering all viewports in the run.
-Requires either `--url` or a positional path to a `*.test.yaml` scenario file. Exits 1 (after
-printing usage) if neither is given.
+screen-reader persona ran), and a `run-summary.json` covering all viewports in the run. If the
+screen-reader persona ran across more than one viewport, also writes a top-level
+`cross-viewport-findings.json` comparing their census results. Requires either `--url` or a
+positional path to a `*.test.yaml` scenario file. Exits 1 (after printing usage) if neither is
+given.
 
 ### `serve` — start a live session
 
@@ -90,6 +92,7 @@ from a `*.test.yaml` file, or — when run from `--url` — the URL's hostname w
 ```
 <out>/<site-or-case-id>/
   run-summary.json                    # batch mode only: { test_case_id, generated_at, viewports: [{ viewport, steps, findings }] }
+  cross-viewport-findings.json        # batch mode only: screen-reader persona AND >1 viewport ran
   <viewport>/                         # batch (blind-crawl) mode
     trace.json
     deterministic-findings.json
@@ -229,8 +232,10 @@ keyed by page URL:
 | `captured_at` | string (ISO timestamp) | |
 | `entries` | array | Reading-order walk of the page — see below. |
 | `declared_live_regions` | array of `{ selector, live, role }` | From `[aria-live]`/`[role=status\|alert\|log\|alertdialog]`. |
+| `declared_broken_aria_refs` | array of `{ selector, attribute, ids }` | Elements whose `aria-controls`/`aria-describedby`/`aria-details`/`aria-errormessage` value contains only ID(s) that resolve to no element. Backs the corresponding 4.1.2 finding. |
+| `declared_alternate_reading_order` | array of `{ selector, flowto_ids }` | From `[aria-flowto]` — descriptive only; no deterministic check reads this today, it's additional evidence for the AI layer's reading-order-vs-visual-order judgment. |
 | `truncated` | boolean | `true` if the walk hit its safety cap or timed out. |
-| `timed_out` | boolean | Only present if the census timed out (20s); in that case `entries`/`declared_live_regions` are empty and `truncated` is `true`. |
+| `timed_out` | boolean | Only present if the census timed out (20s); in that case `entries`/`declared_live_regions`/`declared_broken_aria_refs`/`declared_alternate_reading_order` are empty and `truncated` is `true`. |
 
 Each `entries[]` item:
 
@@ -241,6 +246,20 @@ Each `entries[]` item:
 | `role` | string | Substring of `spoken_phrase` before the first comma. |
 | `tag` | string \| null | |
 | `selector` | string \| null | |
+
+### `cross-viewport-findings.json`
+
+Batch mode only, written after the viewport loop completes, and only when the screen-reader
+persona ran across **more than one** viewport (no single viewport's run ever sees another
+viewport's census, so this comparison can't happen inside `<viewport>/deterministic-findings.json`).
+Not produced by live (`serve`) mode — see [Design constraints](../CONTRIBUTING.md).
+
+Top level: `{ test_case_id, generated_at, findings }`. `findings` uses the same finding shape
+as `deterministic-findings.json` (see below), with `viewport` set to `"<vpA>+<vpB>"` for the
+pair being compared. Currently one comparison: a named interactive control (button, link,
+textbox, etc.) present in one viewport's census `entries` for a URL but entirely absent from
+another's — flagged at `confidence: 0.4` (low; often intentional responsive design, e.g. a
+collapsed nav, so treat as a lead to confirm, not a confirmed defect).
 
 ### `screenshots/step_NNNN.png`
 
@@ -273,7 +292,10 @@ not an exhaustive page audit. Conformance target: **AA is pass/fail, AAA is info
 | 1.3.1 | AA | screen-reader | Heading level skip (jumps past one or more levels) |
 | 1.3.1 | AA | screen-reader | Duplicate, unlabeled landmark roles (can't be told apart by role alone) |
 | 4.1.2 | AA | screen-reader | Interactive control whose whole announcement is a bare role — reading-order superset of the keyboard-persona 4.1.2 check, also catches arrow-key browse-mode-only controls |
+| 4.1.2 | AA | screen-reader | Broken ARIA ID reference — `aria-controls`/`aria-describedby`/`aria-details`/`aria-errormessage` whose ID(s) resolve to no element in the page. A multi-ID value only flags if none of its IDs resolve. |
+| 4.1.2 | AA | screen-reader | Keyboard-focusable control absent from the accessibility-tree census — almost always `aria-hidden="true"` combined with a focusable `tabindex`, cross-referencing the keyboard persona's Tab-reachable trace against this page's census |
 | 4.1.3 | AA | screen-reader | A declared live region (`aria-live`/`role=status\|alert\|log\|alertdialog`) that never announced anything all session |
+| 1.3.1 | AA | screen-reader | Cross-viewport census comparison (`cross-viewport-findings.json`, batch mode, >1 viewport only) — a named interactive control present in one viewport's census but absent from another's for the same URL. Low confidence (0.4): often intentional responsive design, needs human confirmation. |
 
 The scenario-level verdicts — "was every control *needed to complete the goal* reachable"
 (2.1.1) and "no trap *on the path*" (full 2.1.2) — need the AI-driven goal path, so the

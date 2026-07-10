@@ -408,8 +408,12 @@ async function captureScreenReader(page, prevLogLen) {
 // ephemeral Virtual instance (never the live per-step monitor, so it can't
 // pollute that log), producing a structural census: reading-order entries
 // (role/name pairs, from which heading hierarchy and landmark structure are
-// derived), and a direct DOM query for declared live regions (which the
-// event-driven spokenPhraseLog can't show unless they actually fired).
+// derived), a direct DOM query for declared live regions (which the
+// event-driven spokenPhraseLog can't show unless they actually fired), a
+// direct DOM query for ARIA ID-reference attributes whose ID(s) don't resolve
+// to any element (aria-controls/describedby/details/errormessage), and a
+// direct DOM query for declared alternate reading order (aria-flowto) —
+// descriptive only, for the AI layer's reading-order-vs-visual-order judgment.
 const RUN_CENSUS_JS = /* js */ `
 (async () => {
   function cssPath(node) {
@@ -465,7 +469,35 @@ const RUN_CENSUS_JS = /* js */ `
     role: el.getAttribute('role') || null,
   }));
 
-  return { entries, declared_live_regions: declaredLiveRegions, truncated: guard >= 5000 };
+  const ARIA_REF_ATTRS = ['aria-controls', 'aria-describedby', 'aria-details', 'aria-errormessage'];
+  const declaredBrokenAriaRefs = [];
+  Array.from(document.querySelectorAll(ARIA_REF_ATTRS.map(a => '[' + a + ']').join(', ')))
+    .forEach(el => {
+      ARIA_REF_ATTRS.forEach(attr => {
+        const val = el.getAttribute(attr);
+        if (!val) return;
+        const ids = val.trim().split(/\\s+/).filter(Boolean);
+        if (!ids.length) return;
+        const anyResolves = ids.some(id => document.getElementById(id));
+        if (!anyResolves) {
+          declaredBrokenAriaRefs.push({ selector: cssPath(el), attribute: attr, ids });
+        }
+      });
+    });
+
+  const declaredAlternateReadingOrder = Array.from(document.querySelectorAll('[aria-flowto]'))
+    .map(el => ({
+      selector: cssPath(el),
+      flowto_ids: (el.getAttribute('aria-flowto') || '').trim().split(/\\s+/).filter(Boolean),
+    }));
+
+  return {
+    entries,
+    declared_live_regions: declaredLiveRegions,
+    declared_broken_aria_refs: declaredBrokenAriaRefs,
+    declared_alternate_reading_order: declaredAlternateReadingOrder,
+    truncated: guard >= 5000,
+  };
 })()`;
 
 async function runCensus(page) {
@@ -476,7 +508,10 @@ async function runCensusWithTimeout(page, ms = 20000) {
   return Promise.race([
     runCensus(page),
     new Promise((resolve) =>
-      setTimeout(() => resolve({ entries: [], declared_live_regions: [], truncated: true, timed_out: true }), ms)
+      setTimeout(() => resolve({
+        entries: [], declared_live_regions: [], declared_broken_aria_refs: [],
+        declared_alternate_reading_order: [], truncated: true, timed_out: true,
+      }), ms)
     ),
   ]);
 }
@@ -1168,6 +1203,56 @@ function deriveFindingsScreenReader({ steps, census }, { viewport, goalId }) {
     }));
   }
 
+  // --- 4.1.2 Name, Role, Value: broken ARIA ID reference -------------------
+  // aria-controls/describedby/details/errormessage pointing at an ID that
+  // resolves to no element at all. Conservative: a multi-ID value only flags
+  // if NONE of its IDs resolve (declaredBrokenAriaRefs already applies this
+  // in the census DOM query, so no re-filtering needed here).
+  for (const [url, page] of pages) {
+    const broken = page.declared_broken_aria_refs || [];
+    if (!broken.length) continue;
+    findings.push(makeFinding({
+      id: `sr-broken-aria-reference-${viewport}`, wcag: '4.1.2', confidence: 0.9,
+      viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+      summary: `${broken.length} element(s) on ${url} declare an ARIA ID reference that resolves to no ` +
+        `element: ` + broken.slice(0, 6).map((r) => `${r.attribute}="${r.ids.join(' ')}" on ${r.selector}`).join(', '),
+      impact: 'A screen-reader user cannot reach the referenced control, description, or error message — the ' +
+        'relationship the author declared simply does not exist in the page.',
+      evidence: broken.slice(0, 10).map((r) => r.selector).filter(Boolean),
+    }));
+  }
+
+  // --- 4.1.2 Name, Role, Value: keyboard-focusable but AT-invisible -------
+  // Cross-references the keyboard persona's Tab-reachable trace against this
+  // page's census: a control the crawl actually tabbed to but which never
+  // appears in the census walk is (almost always) aria-hidden="true" paired
+  // with a positive/zero tabindex — reachable by a sighted keyboard user,
+  // invisible to a screen-reader user. `steps` is populated by the crawl
+  // regardless of persona (the Tab loop always runs), so this fires even
+  // under `--persona screen-reader` alone.
+  for (const [url, page] of pages) {
+    const censusSelectors = new Set((page.entries || []).map((e) => e.selector).filter(Boolean));
+    const seen = new Set();
+    const hidden = [];
+    for (const s of steps) {
+      if (s.is_body || s.url !== url) continue;
+      const sel = s.active_element_selector;
+      if (!sel || censusSelectors.has(sel) || seen.has(sel)) continue;
+      seen.add(sel);
+      hidden.push(s);
+    }
+    if (!hidden.length) continue;
+    findings.push(makeFinding({
+      id: `sr-focusable-not-exposed-${viewport}`, wcag: '4.1.2', confidence: 0.75,
+      viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+      summary: `${hidden.length} control(s) on ${url} are keyboard-focusable but never appear in the screen-` +
+        `reader accessibility-tree walk (likely aria-hidden="true" combined with a focusable tabindex): ` +
+        hidden.slice(0, 6).map((s) => s.active_element_selector).join(', '),
+      impact: 'A sighted keyboard user can tab to this control; a screen-reader user never learns it exists.',
+      evidence: hidden.slice(0, 10).map((s) => s.active_element_selector).filter(Boolean),
+    }));
+  }
+
   // --- 4.1.3 Status Messages: declared live region that never announced ---
   const totalLiveAnnouncements = steps.reduce((n, s) => n + (s.sr_announcement?.live_announcements?.length || 0), 0);
   if (totalLiveAnnouncements === 0) {
@@ -1197,6 +1282,50 @@ function deriveAllFindings({ steps, startUrl, contextChangeOnFocus, census }, { 
   }
   if (needsScreenReader(persona)) {
     findings.push(...deriveFindingsScreenReader({ steps, census }, { viewport, goalId }));
+  }
+  return findings;
+}
+
+// Low-confidence, informative-leaning comparison across viewports (mobile vs.
+// desktop): a NAMED interactive control present in one viewport's census but
+// entirely absent from another's for the same URL. Often intentional
+// responsive design (e.g. a nav collapsing into a hamburger), so this follows
+// the same low-confidence precedent as the 4.1.3 silent-live-region check
+// rather than treating a divergence as an automatic defect.
+const CROSS_VIEWPORT_NAMED_ROLES = new Set([
+  'button', 'link', 'textbox', 'combobox', 'checkbox', 'radio', 'slider', 'switch', 'searchbox',
+]);
+function deriveCrossViewportFindings(censusByViewport) {
+  const findings = [];
+  const viewportNames = Object.keys(censusByViewport);
+  for (let i = 0; i < viewportNames.length; i++) {
+    for (let j = i + 1; j < viewportNames.length; j++) {
+      const [vpA, vpB] = [viewportNames[i], viewportNames[j]];
+      const pagesA = censusByViewport[vpA] || {};
+      const pagesB = censusByViewport[vpB] || {};
+      const commonUrls = Object.keys(pagesA).filter((u) => u in pagesB);
+      for (const url of commonUrls) {
+        const namedEntries = (page) => (page.entries || [])
+          .filter((e) => CROSS_VIEWPORT_NAMED_ROLES.has(e.role) && e.role !== e.spoken_phrase)
+          .map((e) => e.spoken_phrase);
+        const setA = new Set(namedEntries(pagesA[url]));
+        const setB = new Set(namedEntries(pagesB[url]));
+        const onlyInA = [...setA].filter((p) => !setB.has(p));
+        const onlyInB = [...setB].filter((p) => !setA.has(p));
+        if (!onlyInA.length && !onlyInB.length) continue;
+        findings.push(makeFinding({
+          id: `cross-viewport-divergence-${vpA}-vs-${vpB}`,
+          wcag: '1.3.1', confidence: 0.4, viewport: `${vpA}+${vpB}`, url,
+          persona: 'screen-reader',
+          summary: `Named interactive control(s) present in the ${vpA} accessibility-tree census for ${url} ` +
+            `but entirely absent from ${vpB} (or vice versa): ` +
+            [...onlyInA.slice(0, 3).map((p) => `${vpA} only: "${p}"`), ...onlyInB.slice(0, 3).map((p) => `${vpB} only: "${p}"`)].join('; '),
+          impact: 'A screen-reader user on one viewport may lose access to functionality available on the ' +
+            'other — though this may also reflect intentional responsive design (e.g. a collapsed nav); ' +
+            'needs human confirmation.',
+        }));
+      }
+    }
   }
   return findings;
 }
@@ -1420,7 +1549,7 @@ async function runViewport(browser, testCase, viewport, opts) {
 
   await cdp.detach().catch(() => {});
   await context.close();
-  return { viewport: viewport.name, steps: result.steps.length, findings };
+  return { viewport: viewport.name, steps: result.steps.length, findings, census: censusStore };
 }
 
 // Chromium launch args: full Chromium, new-headless → real pixels (SwiftShader).
@@ -1817,15 +1946,28 @@ async function main() {
     }
 
     const summary = [];
+    const censusByViewport = {};
     for (const vp of viewports) {
       const r = await runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState, persona });
-      summary.push(r);
+      summary.push({ viewport: r.viewport, steps: r.steps, findings: r.findings });
+      if (needsScreenReader(persona)) censusByViewport[vp.name] = r.census;
     }
 
     fs.writeFileSync(
       path.join(outDir, 'run-summary.json'),
       JSON.stringify({ test_case_id: testCase.id, generated_at: timestamp, viewports: summary }, null, 2)
     );
+
+    // Cross-viewport comparison needs at least two viewports' census data at
+    // once — no single runViewport() call ever sees more than one, so this
+    // has to live here, after the loop, batch/crawl mode only.
+    if (needsScreenReader(persona) && Object.keys(censusByViewport).length > 1) {
+      const crossViewportFindings = deriveCrossViewportFindings(censusByViewport);
+      fs.writeFileSync(
+        path.join(outDir, 'cross-viewport-findings.json'),
+        JSON.stringify({ test_case_id: testCase.id, generated_at: timestamp, findings: crossViewportFindings }, null, 2)
+      );
+    }
     log(`\nDone. Output: ${outDir}`);
   } finally {
     await browser.close();

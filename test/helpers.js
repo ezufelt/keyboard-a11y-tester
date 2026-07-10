@@ -136,6 +136,21 @@ export async function runBatch({ url, persona = 'all', viewport = 'desktop', out
   return { stdout, stderr, ...readOutputs(outDir, viewport) };
 }
 
+// Runs the batch mode across ALL of a test case's default viewports (desktop
+// + mobile for a synthesized file:// case, since --viewport is omitted) and
+// returns the top-level cross-viewport-findings.json -- the one artifact that
+// needs more than one viewport's data to exist at all.
+export async function runBatchAllViewports({ url, persona = 'all', outDir, maxSteps }) {
+  const args = [RUNNER, '--url', url, '--persona', persona, '--out', outDir];
+  if (maxSteps) args.push('--max-steps', String(maxSteps));
+  const { stdout, stderr } = await execFileP('node', args, { cwd: REPO_ROOT, timeout: 90_000 });
+  const crossViewportPath = path.join(outDir, 'cross-viewport-findings.json');
+  const crossViewportFindings = fs.existsSync(crossViewportPath)
+    ? JSON.parse(fs.readFileSync(crossViewportPath, 'utf8')).findings
+    : null;
+  return { stdout, stderr, crossViewportFindings };
+}
+
 // Starts a live `serve` session in the background; resolves once it prints
 // READY. Callers MUST call stopServe() in a finally block -- the served
 // browser stays alive (and the process keeps running) until `stop` is called.
