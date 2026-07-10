@@ -27,5 +27,9 @@ jobs:
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Verify setup
+        run: node scripts/setup-check.mjs
+      - name: Lint
+        run: npm run lint
       - name: Run tests
         run: npm test

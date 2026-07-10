@@ -36,7 +36,8 @@
   },
   "scripts": {
     "postinstall-browsers": "playwright install --with-deps chromium",
-    "test": "playwright test"
+    "test": "playwright test",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@guidepup/virtual-screen-reader": "^0.32.1",
@@ -46,6 +47,9 @@
     "yaml": "^2.5.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1"
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.1",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0"
   }
 }
