@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-10
+
 ### Added
 - `docs/usage.md` and `docs/interface.md` — usage guide and full CLI/output-schema reference,
   split out of README.md.
@@ -119,6 +121,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Saved-scenario support (`*.test.yaml`, see `test-cases/TEMPLATE.test.yaml`) alongside
   ad-hoc `--url` runs.
 
-[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.2.0...v0.5.0
 [0.2.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ezufelt/keyboard-a11y-tester/releases/tag/v0.1.0
