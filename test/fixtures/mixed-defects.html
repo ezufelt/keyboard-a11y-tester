@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: mixed defects</title>
+<style>
+  a.skip { position: absolute; left: -9999px; }
+  a.skip:focus { left: 8px; top: 8px; outline: 3px solid #06c; }
+  button:focus, a:focus, input:focus { outline: 3px solid #06c; }
+</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to main content</a>
+  <nav>
+    <a href="#a">Link A</a>
+  </nav>
+  <nav>
+    <a href="#b">Link B</a>
+  </nav>
+  <main id="main">
+    <h1>Page title</h1>
+    <h2>Section one</h2>
+    <h4>Jumped to level 4</h4>
+
+    <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7" alt="A cat sitting on a mat">
+    <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7">
+
+    <form>
+      <label>Named field <input type="text" id="named"></label>
+      <input type="text" id="unlabeled">
+    </form>
+
+    <div id="live" aria-live="polite"></div>
+    <button id="trigger">Show confirmation</button>
+    <button id="extra1">Extra 1</button>
+    <button id="extra2">Extra 2</button>
+  </main>
+  <script>
+    document.getElementById('trigger').addEventListener('click', () => {
+      document.getElementById('live').textContent = 'Form submitted successfully';
+    });
+  </script>
+</body>
+</html>

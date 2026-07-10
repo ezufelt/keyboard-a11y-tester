@@ -14,14 +14,30 @@ node scripts/setup-check.mjs   # verify deps + a working Chromium
 
 ## Before opening a PR
 
-There is no automated test suite yet — verification is manual:
+```bash
+npm test   # runs the functional suite in test/ via @playwright/test
+```
 
-- `node --check scripts/runner.mjs` — syntax sanity check.
-- Run the runner against a real or local test page in each `--persona` mode
-  (`keyboard`, `screen-reader`, `all`) and inspect `trace.json` /
-  `deterministic-findings.json` / `screen-reader-census.json` for the change you made.
-- If you touched the live `serve`/`step`/`finish` flow, exercise it directly rather than
-  only the batch crawl — they share code but have different session-persistence paths.
+`test/` drives `scripts/runner.mjs` as a black-box CLI (spawned as a child process) against
+local HTML fixtures in `test/fixtures/` — it doesn't use Playwright's own `page` fixture,
+since the runner launches and drives its own Chromium instance per invocation:
+
+- `test/defects.spec.js` — seeded-defect fixtures (missing alt, heading skip, no focus
+  indicator, keyboard trap, silent live region) assert the expected finding fires, plus a
+  `clean.html` fixture that must produce zero AA findings (the false-positive guard).
+- `test/persona-parity.spec.js` — `--persona keyboard`/`screen-reader`/`all` behave as
+  documented (no cross-contamination of artifacts between personas).
+- `test/live-session.spec.js` — the `serve`/`observe`/`step`/`finish`/`stop` round trip,
+  since that's a different code path than the batch crawl.
+- `test/contract.spec.js` — `trace.json`/`deterministic-findings.json` keep their
+  documented shape.
+
+If you add a new deterministic check or a new fixture defect, add or extend a fixture in
+`test/fixtures/` and a corresponding assertion rather than only verifying manually. If you
+touched something not exercised above (e.g. CAPTCHA compat), still verify manually and say
+so in the PR description — the suite doesn't cover everything yet.
+
+CI runs this suite on every PR (`.github/workflows/test.yml`).
 
 ## Design constraints to respect
 

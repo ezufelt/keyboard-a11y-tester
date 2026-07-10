@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: keyboard trap</title>
+<style>
+  *:focus { outline: 3px solid #06c; }
+</style>
+</head>
+<body>
+  <button id="before">Before the trap</button>
+  <div id="trap" tabindex="0">A focus trap: Tab never leaves this element</div>
+  <button id="after">After the trap (unreachable)</button>
+  <script>
+    // A genuine keyboard trap: real keydown handling that refuses to let Tab
+    // move focus onward -- exactly the 2.1.2 defect this fixture targets.
+    document.getElementById('trap').addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        e.currentTarget.focus();
+      }
+    });
+  </script>
+</body>
+</html>
