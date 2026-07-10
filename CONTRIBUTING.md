@@ -1,8 +1,19 @@
 # Contributing
 
-Thanks for considering a contribution. This is a small, single-maintainer project — issues
-and PRs are welcome, but please open an issue before large changes so we can agree on
-approach first.
+Thanks for considering a contribution. This is a small, single-maintainer project.
+
+- **Bugs and feature requests**: file a [GitHub issue](https://github.com/ezufelt/keyboard-a11y-tester/issues).
+  Include repro steps (or the site/scenario that triggered it) and, for bugs, the relevant
+  `trace.json`/`deterministic-findings.json` excerpt if you have one.
+- **Changes**: all changes land via pull request against `main` — please open an issue
+  before large changes so we can agree on approach first.
+
+## Coding standards
+
+- **ES modules only** — the package is `"type": "module"`; use `import`/`export`, not `require`.
+- **No build step** — `scripts/runner.mjs` and friends are plain `.mjs`, executed directly by
+  Node. Don't introduce a bundler/transpiler.
+- **Node.js ≥ 20** (see `engines` in `package.json`).
 
 ## Setup
 
@@ -12,10 +23,15 @@ npx playwright install chromium
 node scripts/setup-check.mjs   # verify deps + a working Chromium
 ```
 
-## Before opening a PR
+## Required before opening a PR
+
+Run these and confirm they pass — CI re-runs the same checks, but catching problems locally
+first saves a round trip:
 
 ```bash
-npm test   # runs the functional suite in test/ via @playwright/test
+node scripts/setup-check.mjs   # confirm deps_installed and browser_available are both true
+npm run lint                   # eslint
+npm test                       # runs the functional suite in test/ via @playwright/test
 ```
 
 `test/` drives `scripts/runner.mjs` as a black-box CLI (spawned as a child process) against
@@ -37,7 +53,7 @@ If you add a new deterministic check or a new fixture defect, add or extend a fi
 touched something not exercised above (e.g. CAPTCHA compat), still verify manually and say
 so in the PR description — the suite doesn't cover everything yet.
 
-CI runs this suite on every PR (`.github/workflows/test.yml`).
+CI runs `setup-check.mjs`, the linter, and this suite on every PR (`.github/workflows/test.yml`).
 
 ## Design constraints to respect
 
