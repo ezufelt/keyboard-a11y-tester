@@ -33,7 +33,7 @@ const outRootFrom = (arg) => (arg ? path.resolve(arg) : DEFAULT_OUT_ROOT);
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { _: [], out: null, viewport: null, maxSteps: 150, press: null, type: null, port: null, storageState: null };
+  const args = { _: [], out: null, viewport: null, maxSteps: 150, press: null, type: null, port: null, storageState: null, persona: 'all' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--out') args.out = argv[++i];
@@ -45,6 +45,7 @@ function parseArgs(argv) {
     else if (a === '--url') args.url = argv[++i];
     else if (a === '--goal') args.goal = argv[++i];
     else if (a === '--storage-state') args.storageState = argv[++i];
+    else if (a === '--persona') args.persona = argv[++i];
     else if (a === '-h' || a === '--help') args.help = true;
     else args._.push(a);
   }
@@ -67,6 +68,18 @@ function resolveStorageState(arg) {
   return p;
 }
 
+const PERSONAS = new Set(['keyboard', 'screen-reader', 'all']);
+const needsScreenReader = (persona) => persona === 'all' || persona === 'screen-reader';
+const needsKeyboardChecks = (persona) => persona === 'all' || persona === 'keyboard';
+
+function validatePersona(p) {
+  if (!PERSONAS.has(p)) {
+    log(`Invalid --persona: ${p} (expected keyboard|screen-reader|all)`);
+    process.exit(1);
+  }
+  return p;
+}
+
 const USAGE = `
 keyboard-a11y-runner — keyboard-only accessibility runner
 
@@ -79,10 +92,10 @@ Generate one with \`context.storageState({ path: 'auth.json' })\` or \`npx playw
 --save-storage=auth.json <url>\`.
 
 Batch (blind Tab-crawl over the start page, per viewport):
-  node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) [--out <dir>] [--viewport <name>] [--max-steps <n>] [--storage-state <file>]
+  node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) [--out <dir>] [--viewport <name>] [--max-steps <n>] [--storage-state <file>] [--persona <keyboard|screen-reader|all>]
 
 Live agentic session (the agent observes and decides each keystroke):
-  node scripts/runner.mjs serve  (--url <url> [--goal "<task>"] | <test-case.yaml>) [--viewport <name>] [--out <dir>] [--port <n>] [--storage-state <file>]
+  node scripts/runner.mjs serve  (--url <url> [--goal "<task>"] | <test-case.yaml>) [--viewport <name>] [--out <dir>] [--port <n>] [--storage-state <file>] [--persona <keyboard|screen-reader|all>]
        → launches a persistent browser, navigates, prints the session dir. Keep running.
        → --url runs against any site ad-hoc (no YAML); --viewport desktop|mobile (default desktop).
        → --storage-state applies once at launch; the session browser keeps the state alive
@@ -98,6 +111,10 @@ Live agentic session (the agent observes and decides each keystroke):
        → close the browser / end the session.
 
   Keys: Tab Shift+Tab Enter Space Escape ArrowUp ArrowDown ArrowLeft ArrowRight Home End
+  --persona <keyboard|screen-reader|all>   which persona pass(es) to run (default: all).
+       keyboard: focus-visible/pixel-diff checks only (today's behavior).
+       screen-reader: ARIA/ACCNAME accessibility-tree checks only (via @guidepup/virtual-screen-reader),
+       no pixel work, no :focus-visible gate. all: both, merged into one findings report.
 `;
 
 // ---------------------------------------------------------------------------
@@ -275,6 +292,171 @@ async function captureFocused(cdp) {
 }
 
 // ---------------------------------------------------------------------------
+// Screen-reader persona (W3C "Lakshmi") — @guidepup/virtual-screen-reader,
+// injected into the PAGE's JS realm. It builds an ARIA/ACCNAME-spec accessible
+// tree over the live DOM and must run in-page, not in Node against a remote
+// page. We never call its own interaction methods (act/interact/press/type) —
+// all real interaction stays on Playwright's real keyboard events, same rule as
+// the rest of this file (never JS-dispatch synthetic input).
+//
+// Its `virtual` singleton listens for real `focusin` events, so the moment we
+// `start()` it, its cursor tracks Playwright's Tab-driven focus automatically —
+// no manual `.next()` "chasing" is needed or performed. It also wires a
+// MutationObserver that computes WAI-ARIA live-region semantics and pushes
+// "assertive: …" / "polite: …" entries into the same spokenPhraseLog(), which
+// covers WCAG 4.1.3 without a bespoke observer. The one thing that log
+// structurally can't show is a live region that's declared but never fires —
+// caught separately via a direct DOM query in runCensus().
+// ---------------------------------------------------------------------------
+
+const VSR_BUNDLE_PATH = path.join(
+  __dirname, '..', 'node_modules', '@guidepup', 'virtual-screen-reader',
+  'lib', 'esm', 'index.browser.js'
+);
+
+// Turns the library's self-contained browser ESM bundle into a plain classic-
+// script IIFE assigning `window.__vsr = { Virtual, virtual }`. Deliberately
+// avoids dynamic import()/blob: URLs, which real CSP script-src policies often
+// block — a plain addInitScript-injected classic script is not subject to page
+// CSP (verified empirically against a CSP-locked test page).
+let _vsrIifeSource = null;
+function loadVsrIife() {
+  if (_vsrIifeSource) return _vsrIifeSource;
+  if (!fs.existsSync(VSR_BUNDLE_PATH)) {
+    throw new Error(
+      'Screen-reader persona requires "@guidepup/virtual-screen-reader" (run `npm install`), ' +
+      'or pass --persona keyboard to skip it.'
+    );
+  }
+  const raw = fs.readFileSync(VSR_BUNDLE_PATH, 'utf8');
+  const m = raw.match(/export\s*\{\s*([\w$]+)\s+as\s+Virtual\s*,\s*([\w$]+)\s+as\s+virtual\s*\}\s*;/);
+  if (!m) {
+    throw new Error(
+      '@guidepup/virtual-screen-reader browser bundle export shape changed — update the ' +
+      'regex in loadVsrIife() (runner.mjs), or pin an older compatible version.'
+    );
+  }
+  const body = raw.slice(0, m.index);
+  _vsrIifeSource = `(function(){ ${body}\nwindow.__vsr = { Virtual: ${m[1]}, virtual: ${m[2]} }; window.__vsrStarted = false; })();`;
+  return _vsrIifeSource;
+}
+
+// Idempotent per-document: safe to call from both the initial navigation and a
+// page.on('load') handler without double-starting the singleton monitor.
+async function startVsr(page) {
+  return page.evaluate(async () => {
+    if (!window.__vsr || window.__vsrStarted) return !!window.__vsr;
+    window.__vsrStarted = true;
+    await window.__vsr.virtual.start({ container: document.body });
+    return true;
+  }).catch(() => false);
+}
+
+// Diffs the live monitor's spokenPhraseLog since prevLogLen, splitting
+// "assertive:"/"polite:"-prefixed live-region announcements from the plain
+// focus-change announcement. Returns null when screen-reader data isn't
+// available for this step (e.g. persona doesn't include it, or the page hasn't
+// finished (re)injecting yet) — callers must treat null as "unavailable".
+async function captureScreenReader(page, prevLogLen) {
+  return page.evaluate(async (prevLen) => {
+    const v = window.__vsr && window.__vsr.virtual;
+    if (!v) return null;
+    const log = await v.spokenPhraseLog();
+    const newPhrases = log.slice(prevLen);
+    const live = [];
+    let focusAnnouncement = null;
+    for (const p of newPhrases) {
+      const m = /^(assertive|polite):\s*(.*)$/.exec(p);
+      if (m) live.push({ priority: m[1], text: m[2] });
+      else focusAnnouncement = p; // last non-live phrase among THIS step's new entries only
+    }
+    return {
+      log_length: log.length,
+      new_phrases: newPhrases,
+      live_announcements: live,
+      focus_announcement: focusAnnouncement,
+    };
+  }, prevLogLen).catch(() => null);
+}
+
+// One page.evaluate round-trip that walks the WHOLE page with a separate,
+// ephemeral Virtual instance (never the live per-step monitor, so it can't
+// pollute that log), producing a structural census: reading-order entries
+// (role/name pairs, from which heading hierarchy and landmark structure are
+// derived), and a direct DOM query for declared live regions (which the
+// event-driven spokenPhraseLog can't show unless they actually fired).
+const RUN_CENSUS_JS = /* js */ `
+(async () => {
+  function cssPath(node) {
+    if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) {
+      return '#' + CSS.escape(node.id);
+    }
+    const parts = [];
+    let cur = node;
+    while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+      let sel = cur.tagName.toLowerCase();
+      if (cur.id && document.querySelectorAll('#' + CSS.escape(cur.id)).length === 1) {
+        parts.unshift('#' + CSS.escape(cur.id));
+        break;
+      }
+      const parent = cur.parentNode;
+      if (parent) {
+        const sibs = Array.from(parent.children).filter(c => c.tagName === cur.tagName);
+        if (sibs.length > 1) sel += ':nth-of-type(' + (sibs.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(sel);
+      cur = cur.parentNode;
+    }
+    return parts.join(' > ');
+  }
+
+  const reader = new window.__vsr.Virtual();
+  await reader.start({ container: document.body });
+  const entries = [];
+  let phrase = await reader.lastSpokenPhrase();
+  let guard = 0;
+  while (phrase !== 'end of document' && guard++ < 5000) {
+    const el = reader.activeNode;
+    const isEl = el && el.nodeType === 1;
+    const comma = phrase.indexOf(',');
+    const role = (comma === -1 ? phrase : phrase.slice(0, comma)).trim();
+    entries.push({
+      index: guard,
+      spoken_phrase: phrase,
+      role,
+      tag: isEl ? el.tagName.toLowerCase() : null,
+      selector: isEl ? cssPath(el) : null,
+    });
+    await reader.next();
+    phrase = await reader.lastSpokenPhrase();
+  }
+  await reader.stop();
+
+  const declaredLiveRegions = Array.from(
+    document.querySelectorAll('[aria-live], [role=status], [role=alert], [role=log], [role=alertdialog]')
+  ).map(el => ({
+    selector: cssPath(el),
+    live: el.getAttribute('aria-live') || null,
+    role: el.getAttribute('role') || null,
+  }));
+
+  return { entries, declared_live_regions: declaredLiveRegions, truncated: guard >= 5000 };
+})()`;
+
+async function runCensus(page) {
+  return page.evaluate(RUN_CENSUS_JS).catch((e) => { log('  screen-reader census failed:', e.message || String(e)); return null; });
+}
+
+async function runCensusWithTimeout(page, ms = 20000) {
+  return Promise.race([
+    runCensus(page),
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ entries: [], declared_live_regions: [], truncated: true, timed_out: true }), ms)
+    ),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
 // Screenshots & focus-visible pixel diff
 // ---------------------------------------------------------------------------
 
@@ -414,7 +596,7 @@ function focusMetrics(focusedPng, baselinePng, box) {
 // focused element, its AX name/role/state, geometry, computed focus style,
 // locator region, and a focused-region screenshot; appends the full frame for
 // the focus-visible neighbour diff. Returns { step, contextChange }.
-async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevStep, startUrl, fullFrames }) {
+async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevStep, startUrl, fullFrames, persona = 'all', srState }) {
   const focused = await captureFocused(cdp);
   const focusMoved = !prevStep || prevStep.active_element_selector !== focused.selector;
   let contextChange = null;
@@ -422,14 +604,25 @@ async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevSte
     contextChange = { step: index, from: startUrl, to: focused.url };
   }
 
-  const framePng = PNG.sync.read(await page.screenshot());
-  fullFrames.push(framePng);
-
+  const capturePixelDiff = needsKeyboardChecks(persona);
   let shotRel = null;
-  if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
-    const crop = cropPng(framePng, inflate(focused.bbox));
-    shotRel = path.join('screenshots', `${stepId(index)}.png`);
-    fs.writeFileSync(path.join(screenshotsDir, `${stepId(index)}.png`), PNG.sync.write(crop));
+  if (capturePixelDiff) {
+    const framePng = PNG.sync.read(await page.screenshot());
+    fullFrames.push(framePng);
+    if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
+      const crop = cropPng(framePng, inflate(focused.bbox));
+      shotRel = path.join('screenshots', `${stepId(index)}.png`);
+      fs.writeFileSync(path.join(screenshotsDir, `${stepId(index)}.png`), PNG.sync.write(crop));
+    }
+  }
+
+  let srAnnouncement = null;
+  if (needsScreenReader(persona) && srState) {
+    const sr = await captureScreenReader(page, srState.logLength);
+    if (sr) {
+      srState.logLength = sr.log_length;
+      srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
+    }
   }
 
   const step = {
@@ -452,6 +645,7 @@ async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevSte
     region: focused.region ?? null,
     focused_region_screenshot: shotRel,
     focus_visible: null, // filled in post-process
+    sr_announcement: srAnnouncement,
   };
   return { step, contextChange };
 }
@@ -460,12 +654,13 @@ async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevSte
 // The blind Tab-crawl (mechanical capture; scenario navigation is driven mode)
 // ---------------------------------------------------------------------------
 
-async function crawl(page, cdp, { maxSteps, screenshotsDir }) {
+async function crawl(page, cdp, { maxSteps, screenshotsDir, persona = 'all', srState }) {
   const steps = [];
   const fullFrames = []; // decoded PNG per step, for focus-visible neighbour diff
   ensureDir(screenshotsDir);
 
-  const restPng = PNG.sync.read(await page.screenshot()); // baseline: nothing focused
+  const capturePixelDiff = needsKeyboardChecks(persona);
+  const restPng = capturePixelDiff ? PNG.sync.read(await page.screenshot()) : null; // baseline: nothing focused
   const startUrl = page.url();
   let firstSelector = null;
   let contextChangeOnFocus = null; // 3.2.1 probe
@@ -474,7 +669,7 @@ async function crawl(page, cdp, { maxSteps, screenshotsDir }) {
     await page.keyboard.press('Tab');
     await page.waitForTimeout(30); // let auto-scroll / focus settle
     const { step, contextChange } = await recordStep(page, cdp, {
-      keystroke: 'Tab', index: i, screenshotsDir, prevStep: steps[steps.length - 1], startUrl, fullFrames,
+      keystroke: 'Tab', index: i, screenshotsDir, prevStep: steps[steps.length - 1], startUrl, fullFrames, persona, srState,
     });
     if (contextChange && !contextChangeOnFocus) contextChangeOnFocus = contextChange;
     steps.push(step);
@@ -486,7 +681,7 @@ async function crawl(page, cdp, { maxSteps, screenshotsDir }) {
     }
   }
 
-  finalizeFocusVisible(steps, fullFrames, restPng);
+  if (capturePixelDiff) finalizeFocusVisible(steps, fullFrames, restPng);
   return { steps, startUrl, contextChangeOnFocus };
 }
 
@@ -561,6 +756,8 @@ function severityFor(wcag) {
   return {
     '2.1.1': 'blocker',
     '2.1.2': 'blocker',
+    '1.1.1': 'serious',
+    '1.3.1': 'moderate',
     '1.4.1': 'moderate',
     '2.4.1': 'moderate',
     '2.4.3': 'moderate',
@@ -568,16 +765,19 @@ function severityFor(wcag) {
     '2.4.13': 'minor',
     '3.2.1': 'serious',
     '4.1.2': 'serious',
+    '4.1.3': 'moderate',
   }[wcag] || 'moderate';
 }
 
 // conformance_level: 'AA' findings are pass/fail; 'AAA' findings are INFORMATIVE
 // (advisory) — never a scenario failure on their own.
-function makeFinding({ id, wcag, confidence, viewport, goalId, summary, impact, evidence, severity, level, url, locations }) {
+function makeFinding({ id, wcag, confidence, viewport, goalId, summary, impact, evidence, severity, level, url, locations, persona, evidenceKind }) {
   return {
     id,
     wcag,
     source: 'deterministic',
+    persona: persona || 'keyboard',          // 'keyboard' | 'screen-reader'
+    evidence_kind: evidenceKind || 'step_id', // 'step_id' | 'selector'
     conformance_level: level || 'AA',
     confidence,
     severity: severity || severityFor(wcag),
@@ -612,7 +812,7 @@ function locate(stops, fallbackUrl) {
 // scenario-level verdicts — "was every control *needed to complete the goal*
 // keyboard-reachable" (2.1.1) and "no trap *on the path*" (2.1.2 in full) —
 // require knowing the goal path and belong to the AI-driven layer.
-function deriveFindings({ steps, startUrl, contextChangeOnFocus }, { viewport, goalId }) {
+function deriveFindingsKeyboard({ steps, startUrl, contextChangeOnFocus }, { viewport, goalId }) {
   const findings = [];
   const focusStops = steps.filter((s) => !s.is_body);
 
@@ -810,6 +1010,130 @@ function deriveFindings({ steps, startUrl, contextChangeOnFocus }, { viewport, g
   return findings;
 }
 
+// Screen-reader persona (W3C "Lakshmi") deterministic findings, derived from
+// the page-wide census (reading-order entries + declared live regions) and the
+// per-step sr_announcement data. Unlike deriveFindingsKeyboard, evidence here
+// is mostly page-selector-based (evidence_kind: 'selector'), since census
+// entries aren't tied to a specific keyboard step.
+function deriveFindingsScreenReader({ steps, census }, { viewport, goalId }) {
+  const findings = [];
+  const pages = census ? Object.entries(census) : [];
+
+  // Roles whose accessible name is the WHOLE spoken phrase when unnamed (i.e.
+  // the phrase is exactly the bare role, no ", <name>" suffix).
+  const NAMED_ROLES_1_1_1 = new Set(['image']);
+  const NAMED_ROLES_4_1_2 = new Set([
+    'button', 'link', 'textbox', 'combobox', 'checkbox', 'radio', 'slider', 'switch', 'searchbox',
+  ]);
+  const LANDMARK_ROLES = new Set([
+    'navigation', 'main', 'banner', 'contentinfo', 'complementary', 'region', 'search', 'form',
+  ]);
+
+  // --- 1.1.1 Non-text Content: images with no accessible name -------------
+  for (const [url, page] of pages) {
+    const unnamed = (page.entries || []).filter((e) => NAMED_ROLES_1_1_1.has(e.role) && e.role === e.spoken_phrase);
+    if (!unnamed.length) continue;
+    findings.push(makeFinding({
+      id: `sr-missing-alt-${viewport}`, wcag: '1.1.1', confidence: 0.85,
+      viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+      summary: `${unnamed.length} image(s) on ${url} have no accessible name (missing alt text or ` +
+        `aria-label): ` + unnamed.slice(0, 6).map((e) => e.selector).join(', '),
+      impact: 'A screen-reader user hears only "image" with no indication of its content or purpose.',
+      evidence: unnamed.slice(0, 10).map((e) => e.selector).filter(Boolean),
+    }));
+  }
+
+  // --- 1.3.1 Info & Relationships: heading level skips --------------------
+  for (const [url, page] of pages) {
+    const levels = (page.entries || [])
+      .map((e) => {
+        const m = /^heading, .*, level (\d)$/.exec(e.spoken_phrase);
+        return m ? { level: Number(m[1]), e } : null;
+      })
+      .filter(Boolean);
+    const skips = [];
+    for (let i = 1; i < levels.length; i++) {
+      if (levels[i].level - levels[i - 1].level > 1) skips.push(levels[i]);
+    }
+    if (!skips.length) continue;
+    findings.push(makeFinding({
+      id: `sr-heading-skip-${viewport}`, wcag: '1.3.1', confidence: 0.75,
+      viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+      summary: `${skips.length} heading level skip(s) on ${url} (jumping past one or more levels): ` +
+        skips.slice(0, 6).map((s) => s.e.spoken_phrase).join('; '),
+      impact: 'A screen-reader user navigating by heading level loses the document outline and may miss sections.',
+      evidence: skips.slice(0, 10).map((s) => s.e.selector).filter(Boolean),
+    }));
+  }
+
+  // --- 1.3.1 Info & Relationships: duplicate unlabeled landmarks ----------
+  for (const [url, page] of pages) {
+    const counts = new Map();
+    for (const e of page.entries || []) {
+      if (LANDMARK_ROLES.has(e.role) && e.role === e.spoken_phrase) {
+        counts.set(e.role, (counts.get(e.role) || 0) + 1);
+      }
+    }
+    const dups = [...counts].filter(([, n]) => n > 1);
+    if (!dups.length) continue;
+    findings.push(makeFinding({
+      id: `sr-duplicate-landmark-${viewport}`, wcag: '1.3.1', confidence: 0.55,
+      viewport, goalId, url, persona: 'screen-reader',
+      summary: `Unlabeled, duplicated landmark role(s) on ${url}: ` +
+        dups.map(([r, n]) => `${r} (${n}×)`).join(', '),
+      impact: 'A screen-reader user browsing by landmark cannot distinguish multiple regions sharing the same unlabeled role.',
+    }));
+  }
+
+  // --- 4.1.2 Name, Role, Value: reading-order controls with no name -------
+  // Superset of the keyboard persona's Tab-reachable check — also catches
+  // controls only reachable via a screen reader's arrow-key browse mode.
+  for (const [url, page] of pages) {
+    const unnamed = (page.entries || []).filter((e) => NAMED_ROLES_4_1_2.has(e.role) && e.role === e.spoken_phrase);
+    if (!unnamed.length) continue;
+    findings.push(makeFinding({
+      id: `sr-missing-accessible-name-${viewport}`, wcag: '4.1.2', confidence: 0.75,
+      viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+      summary: `${unnamed.length} interactive control(s) on ${url} announce only their role, no name: ` +
+        unnamed.slice(0, 6).map((e) => `${e.role} at ${e.selector}`).join(', '),
+      impact: 'A screen-reader user cannot tell what the control does or target it by name.',
+      evidence: unnamed.slice(0, 10).map((e) => e.selector).filter(Boolean),
+    }));
+  }
+
+  // --- 4.1.3 Status Messages: declared live region that never announced ---
+  const totalLiveAnnouncements = steps.reduce((n, s) => n + (s.sr_announcement?.live_announcements?.length || 0), 0);
+  if (totalLiveAnnouncements === 0) {
+    for (const [url, page] of pages) {
+      if (!page.declared_live_regions?.length) continue;
+      findings.push(makeFinding({
+        id: `sr-live-region-silent-${viewport}`, wcag: '4.1.3', confidence: 0.4,
+        viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+        summary: `${page.declared_live_regions.length} declared live region(s) on ${url} (aria-live/status/` +
+          `alert/log) never produced an announcement during this session: ` +
+          page.declared_live_regions.slice(0, 5).map((r) => r.selector).join(', '),
+        impact: 'If this region is meant to announce dynamic updates (e.g. form errors, confirmations), a ' +
+          'screen-reader user never hears them on this path.',
+        evidence: page.declared_live_regions.slice(0, 10).map((r) => r.selector).filter(Boolean),
+      }));
+    }
+  }
+
+  return findings;
+}
+
+// Dispatches to one or both persona finding sets based on --persona.
+function deriveAllFindings({ steps, startUrl, contextChangeOnFocus, census }, { viewport, goalId, persona = 'all' }) {
+  const findings = [];
+  if (needsKeyboardChecks(persona)) {
+    findings.push(...deriveFindingsKeyboard({ steps, startUrl, contextChangeOnFocus }, { viewport, goalId }));
+  }
+  if (needsScreenReader(persona)) {
+    findings.push(...deriveFindingsScreenReader({ steps, census }, { viewport, goalId }));
+  }
+  return findings;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime setup + startup self-check
 // ---------------------------------------------------------------------------
@@ -825,7 +1149,7 @@ const DETERMINISM_CSS = `
   caret-color: transparent !important;
 }`;
 
-async function makeContext(browser, viewport, disableAnimations, storageState) {
+async function makeContext(browser, viewport, disableAnimations, storageState, persona = 'all') {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: 1,
@@ -844,6 +1168,9 @@ async function makeContext(browser, viewport, disableAnimations, storageState) {
       if (document.head) add();
       else document.addEventListener('DOMContentLoaded', add);
     }, DETERMINISM_CSS);
+  }
+  if (needsScreenReader(persona)) {
+    await context.addInitScript({ content: loadVsrIife() });
   }
   return context;
 }
@@ -947,30 +1274,56 @@ async function ensureCaptchaCompat(context, page) {
 // ---------------------------------------------------------------------------
 
 async function runViewport(browser, testCase, viewport, opts) {
+  const persona = opts.persona || 'all';
   const disableAnimations = testCase.runtime?.disable_animations !== false;
-  const context = await makeContext(browser, viewport, disableAnimations, opts.storageState);
+  const context = await makeContext(browser, viewport, disableAnimations, opts.storageState, persona);
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send('DOM.enable');
   await cdp.send('Accessibility.enable');
 
+  const censusStore = {};
+  const censusedUrls = new Set();
+  const srState = { logLength: 0 };
+  // Chains every 'load'-triggered census onto the previous one, so callers can
+  // `await pendingCensus` to be sure no census work is still in flight before
+  // reading censusStore or closing the page/context (avoids both a race where
+  // findings are derived from an incomplete census, and a crash from evaluating
+  // against an already-closed page).
+  let pendingCensus = Promise.resolve();
+  if (needsScreenReader(persona)) {
+    page.on('load', () => {
+      pendingCensus = pendingCensus.then(async () => {
+        await startVsr(page);
+        const url = page.url();
+        if (!censusedUrls.has(url)) {
+          censusedUrls.add(url);
+          censusStore[url] = { captured_at: new Date().toISOString(), ...(await runCensusWithTimeout(page)) };
+        }
+      }).catch(() => {});
+    });
+  }
+
   const startUrl = testCase.target.start_url;
   log(`  [${viewport.name}] navigating ${startUrl}`);
   await page.goto(startUrl, { waitUntil: 'load', timeout: 60000 });
   await waitForReady(page);
+  if (needsScreenReader(persona)) await startVsr(page);
 
   const vpDir = path.join(opts.outDir, viewport.name);
   const screenshotsDir = path.join(vpDir, 'screenshots');
   ensureDir(screenshotsDir);
 
   const goalId = testCase.goals?.[0]?.id || null;
-  const result = await crawl(page, cdp, { maxSteps: opts.maxSteps, screenshotsDir });
-  const findings = deriveFindings(result, { viewport: viewport.name, goalId });
+  const result = await crawl(page, cdp, { maxSteps: opts.maxSteps, screenshotsDir, persona, srState });
+  await pendingCensus;
+  const findings = deriveAllFindings({ ...result, census: censusStore }, { viewport: viewport.name, goalId, persona });
 
   const trace = {
     test_case_id: testCase.id,
     viewport: viewport.name,
     mode: 'crawl',
+    personas: persona === 'all' ? ['keyboard', 'screen-reader'] : [persona],
     viewport_size: { width: viewport.width, height: viewport.height },
     start_url: startUrl,
     generated_at: opts.timestamp,
@@ -986,6 +1339,15 @@ async function runViewport(browser, testCase, viewport, opts) {
       null, 2
     )
   );
+  if (needsScreenReader(persona)) {
+    fs.writeFileSync(
+      path.join(vpDir, 'screen-reader-census.json'),
+      JSON.stringify(
+        { test_case_id: testCase.id, viewport: viewport.name, generated_at: opts.timestamp, pages: censusStore },
+        null, 2
+      )
+    );
+  }
 
   log(`  [${viewport.name}] crawl: ${result.steps.length} steps, ${findings.length} finding(s) → ${vpDir}`);
 
@@ -1019,6 +1381,7 @@ function sessionPaths(dir) {
     screenshotsDir: path.join(dir, 'screenshots'),
     restPng: path.join(dir, 'frames', 'rest.png'),
     stopFile: path.join(dir, 'STOP'),
+    srCensusJson: path.join(dir, 'sr-census.json'),
   };
 }
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -1077,6 +1440,7 @@ function observationOf(step) {
     region: step.region,
     bounding_box: step.bounding_box,
     screenshot: step.focused_region_screenshot,
+    sr_announcement: step.sr_announcement ?? null,
   };
 }
 
@@ -1094,6 +1458,7 @@ async function connectSession(dir) {
 }
 
 async function cmdServe(args) {
+  const persona = validatePersona(args.persona || 'all');
   const testCase = args.url ? synthCase(args.url, args.goal) : loadCase(args._[1]);
   const vp = pickViewport(testCase, args.viewport);
   const port = args.port || 9333;
@@ -1105,22 +1470,47 @@ async function cmdServe(args) {
   ensureDir(paths.screenshotsDir);
   if (fs.existsSync(paths.stopFile)) fs.rmSync(paths.stopFile);
 
+  // Fail fast, before launching Chromium, if the screen-reader persona's
+  // dependency can't be loaded (same philosophy as the :focus-visible gate).
+  if (needsScreenReader(persona)) loadVsrIife();
+
   const browser = await chromium.launch({
     channel: 'chromium', headless: true,
     args: [...CHROMIUM_ARGS, `--remote-debugging-port=${port}`],
   });
-  // Startup self-check.
-  const probe = await browser.newContext();
-  try { await verifyFocusVisibleModality(probe); } finally { await probe.close(); }
+  // Startup self-check — irrelevant to a screen-reader-only run (no pixel work).
+  if (needsKeyboardChecks(persona)) {
+    const probe = await browser.newContext();
+    try { await verifyFocusVisibleModality(probe); } finally { await probe.close(); }
+  }
 
   const disableAnimations = testCase.runtime?.disable_animations !== false;
-  const context = await makeContext(browser, vp, disableAnimations, storageState);
+  const context = await makeContext(browser, vp, disableAnimations, storageState, persona);
   const page = await context.newPage();
+
+  const censusStore = {};
+  const censusedUrls = new Set();
+  let pendingCensus = Promise.resolve(); // see runViewport for why this is chained/awaited
+  if (needsScreenReader(persona)) {
+    page.on('load', () => {
+      pendingCensus = pendingCensus.then(async () => {
+        await startVsr(page);
+        const url = page.url();
+        if (!censusedUrls.has(url)) {
+          censusedUrls.add(url);
+          censusStore[url] = { captured_at: new Date().toISOString(), ...(await runCensusWithTimeout(page)) };
+          writeJson(paths.srCensusJson, censusStore);
+        }
+      }).catch(() => {});
+    });
+  }
+
   await page.goto(testCase.target.start_url, { waitUntil: 'load', timeout: 60000 });
   await waitForReady(page);
+  if (needsScreenReader(persona)) await startVsr(page);
   const captchaCompat = await ensureCaptchaCompat(context, page);
   if (captchaCompat) log('  ⚠ CAPTCHA on start page — navigator.webdriver suppressed for this page (human-approved)');
-  fs.writeFileSync(paths.restPng, await page.screenshot());
+  if (needsKeyboardChecks(persona)) fs.writeFileSync(paths.restPng, await page.screenshot());
 
   writeJson(paths.sessionJson, {
     caseId: testCase.id,
@@ -1131,25 +1521,27 @@ async function cmdServe(args) {
     goalId: testCase.goals?.[0]?.id || null,
     goals: (testCase.goals || []).map((g) => ({ id: g.id, intent: g.intent })),
     captchaCompat,
+    persona,
+    srLogLength: 0,
     index: 0,
   });
   writeJson(paths.stepsJson, []);
 
-  log(`  ✓ :focus-visible verified · navigated ${page.url()}` + (storageState ? ` · storage state loaded` : ''));
+  log(`  ✓ startup checks passed · navigated ${page.url()}` + (storageState ? ` · storage state loaded` : ''));
   process.stdout.write(`READY ${dir}\n`);
   // Stay alive until `stop` writes the STOP file (keeps the browser persistent).
   await new Promise((resolve) => {
     const t = setInterval(() => { if (fs.existsSync(paths.stopFile)) { clearInterval(t); resolve(); } }, 500);
   });
+  await pendingCensus; // let any in-flight census finish before the page/browser goes away
   await browser.close();
   log('session stopped');
 }
 
 async function cmdObserve(args) {
-  const { browser, cdp, session } = await connectSession(args._[1]);
+  const { browser, cdp, page, session } = await connectSession(args._[1]);
   const focused = await captureFocused(cdp);
-  await browser.close();
-  process.stdout.write(JSON.stringify({
+  const obs = {
     index: session.index,
     note: 'current state (no keystroke sent)',
     url: focused.url ?? session.startUrl,
@@ -1157,7 +1549,14 @@ async function cmdObserve(args) {
       selector: focused.selector, tag: focused.tag ?? null,
       name: focused.ax?.name ?? null, role: focused.ax?.role ?? null, states: focused.ax?.states ?? null,
     },
-  }, null, 2) + '\n');
+  };
+  if (needsScreenReader(session.persona || 'all')) {
+    obs.sr_last_spoken_phrase = await page
+      .evaluate(() => window.__vsr?.virtual?.lastSpokenPhrase())
+      .catch(() => null);
+  }
+  await browser.close();
+  process.stdout.write(JSON.stringify(obs, null, 2) + '\n');
 }
 
 async function cmdStep(args) {
@@ -1187,15 +1586,30 @@ async function cmdStep(args) {
     if (captchaCompatApplied) log(`  ⚠ CAPTCHA detected at ${page.url()} — navigator.webdriver suppressed for this page (human-approved)`);
   }
 
+  const persona = session.persona || 'all';
   const focused = await captureFocused(cdp);
   const prev = steps[steps.length - 1];
-  const framePng = PNG.sync.read(await page.screenshot());
-  fs.writeFileSync(path.join(paths.framesDir, `full_${pad(index)}.png`), PNG.sync.write(framePng));
+
   let shotRel = null;
-  if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
-    fs.writeFileSync(path.join(paths.screenshotsDir, `${stepId(index)}.png`), PNG.sync.write(cropPng(framePng, inflate(focused.bbox))));
-    shotRel = path.join('screenshots', `${stepId(index)}.png`);
+  if (needsKeyboardChecks(persona)) {
+    const framePng = PNG.sync.read(await page.screenshot());
+    fs.writeFileSync(path.join(paths.framesDir, `full_${pad(index)}.png`), PNG.sync.write(framePng));
+    if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
+      fs.writeFileSync(path.join(paths.screenshotsDir, `${stepId(index)}.png`), PNG.sync.write(cropPng(framePng, inflate(focused.bbox))));
+      shotRel = path.join('screenshots', `${stepId(index)}.png`);
+    }
   }
+
+  let srAnnouncement = null;
+  let srLogLength = session.srLogLength || 0;
+  if (needsScreenReader(persona)) {
+    const sr = await captureScreenReader(page, srLogLength);
+    if (sr) {
+      srLogLength = sr.log_length;
+      srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
+    }
+  }
+
   const step = {
     step_id: stepId(index), index, keystroke_sent: keystroke,
     active_element_selector: focused.selector, tag: focused.tag ?? null, tabindex: focused.tabindex ?? null,
@@ -1206,10 +1620,11 @@ async function cmdStep(args) {
     text: focused.text ?? '', is_body: !!focused.isBody,
     computed_focus_style: focused.focusStyle ?? null, region: focused.region ?? null,
     focused_region_screenshot: shotRel, focus_visible: null,
+    sr_announcement: srAnnouncement,
   };
   steps.push(step);
   writeJson(paths.stepsJson, steps);
-  writeJson(paths.sessionJson, { ...session, index, captchaCompat: session.captchaCompat || captchaCompatApplied });
+  writeJson(paths.sessionJson, { ...session, index, captchaCompat: session.captchaCompat || captchaCompatApplied, srLogLength });
   await browser.close(); // disconnect only; the served browser stays alive
   const obs = observationOf(step);
   if (captchaCompatApplied) obs.captcha_compat_applied = true;
@@ -1222,23 +1637,50 @@ async function cmdFinish(args) {
   if (!fs.existsSync(paths.sessionJson)) { log(`No session at ${dir}`); process.exit(1); }
   const session = readJson(paths.sessionJson);
   const steps = readJson(paths.stepsJson);
-  const restPng = PNG.sync.read(fs.readFileSync(paths.restPng));
-  const fullFrames = steps.map((s) => PNG.sync.read(fs.readFileSync(path.join(paths.framesDir, `full_${pad(s.index)}.png`))));
+  const persona = session.persona || 'all';
 
-  finalizeFocusVisible(steps, fullFrames, restPng);
-  const findings = deriveFindings(
-    { steps, startUrl: session.startUrl, contextChangeOnFocus: null },
-    { viewport: session.viewport, goalId: session.goalId }
+  if (needsKeyboardChecks(persona)) {
+    const restPng = PNG.sync.read(fs.readFileSync(paths.restPng));
+    const fullFrames = steps.map((s) => PNG.sync.read(fs.readFileSync(path.join(paths.framesDir, `full_${pad(s.index)}.png`))));
+    finalizeFocusVisible(steps, fullFrames, restPng);
+  }
+
+  let census = null;
+  if (needsScreenReader(persona)) {
+    census = fs.existsSync(paths.srCensusJson) ? readJson(paths.srCensusJson) : {};
+    // The long-lived `serve` process's page.on('load') census write may not have
+    // completed for the most recent navigation by the time this separate `finish`
+    // process runs — guarantee at least the current page's census exists.
+    const { browser, page } = await connectSession(dir);
+    try {
+      const currentUrl = page.url();
+      if (!census[currentUrl]) {
+        census[currentUrl] = { captured_at: new Date().toISOString(), ...(await runCensusWithTimeout(page)) };
+        writeJson(paths.srCensusJson, census);
+      }
+    } finally {
+      await browser.close();
+    }
+  }
+
+  const findings = deriveAllFindings(
+    { steps, startUrl: session.startUrl, contextChangeOnFocus: null, census },
+    { viewport: session.viewport, goalId: session.goalId, persona }
   );
 
   const trace = {
     test_case_id: session.caseId, viewport: session.viewport, mode: 'driven-live',
+    personas: persona === 'all' ? ['keyboard', 'screen-reader'] : [persona],
     viewport_size: session.viewport_size, start_url: session.startUrl,
     goals: session.goals, steps,
   };
   writeJson(path.join(dir, 'trace.json'), trace);
   writeJson(path.join(dir, 'deterministic-findings.json'),
     { test_case_id: session.caseId, viewport: session.viewport, mode: 'driven-live', findings });
+  if (needsScreenReader(persona)) {
+    writeJson(path.join(dir, 'screen-reader-census.json'),
+      { test_case_id: session.caseId, viewport: session.viewport, mode: 'driven-live', pages: census });
+  }
   log(`finished: ${steps.length} steps, ${findings.length} deterministic finding(s) → ${dir}`);
   process.stdout.write(JSON.stringify({ steps: steps.length, findings }, null, 2) + '\n');
 }
@@ -1266,6 +1708,7 @@ async function main() {
     process.exit(args.help ? 0 : 1);
   }
 
+  const persona = validatePersona(args.persona);
   const testCase = args.url ? synthCase(args.url, args.goal) : loadCase(args._[0]);
 
   let viewports = testCase.viewports || [{ name: 'desktop', width: 1280, height: 800 }];
@@ -1274,6 +1717,10 @@ async function main() {
     log(`No matching viewport: ${args.viewport}`);
     process.exit(1);
   }
+
+  // Fail fast, before launching Chromium, if the screen-reader persona's
+  // dependency can't be loaded (same philosophy as the :focus-visible gate).
+  if (needsScreenReader(persona)) loadVsrIife();
 
   const timestamp = process.env.RUN_TIMESTAMP || new Date().toISOString();
   const outRoot = outRootFrom(args.out);
@@ -1284,23 +1731,27 @@ async function main() {
   log(`Test case: ${testCase.id}`);
   log(`Viewports: ${viewports.map((v) => v.name).join(', ')}`);
   if (storageState) log(`Storage state: ${storageState}`);
+  log(`Persona: ${persona}`);
 
   const browser = await chromium.launch({ channel: 'chromium', headless: true, args: CHROMIUM_ARGS });
 
   try {
-    // Startup self-check — fail fast if modality is wrong.
-    log('Verifying :focus-visible modality on CDP-driven key events…');
-    const probeCtx = await browser.newContext();
-    try {
-      await verifyFocusVisibleModality(probeCtx);
-      log('  ✓ :focus-visible fires on keyboard modality');
-    } finally {
-      await probeCtx.close();
+    // Startup self-check — fail fast if modality is wrong. Irrelevant to a
+    // screen-reader-only run (no pixel work), so skip it there.
+    if (needsKeyboardChecks(persona)) {
+      log('Verifying :focus-visible modality on CDP-driven key events…');
+      const probeCtx = await browser.newContext();
+      try {
+        await verifyFocusVisibleModality(probeCtx);
+        log('  ✓ :focus-visible fires on keyboard modality');
+      } finally {
+        await probeCtx.close();
+      }
     }
 
     const summary = [];
     for (const vp of viewports) {
-      const r = await runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState });
+      const r = await runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState, persona });
       summary.push(r);
     }
 

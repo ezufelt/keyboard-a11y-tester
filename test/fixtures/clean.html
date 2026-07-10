@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: clean page (expect zero findings)</title>
+<style>
+  a.skip { position: absolute; left: -9999px; }
+  a.skip:focus { left: 8px; top: 8px; outline: 3px solid #06c; }
+  button:focus, a:focus, input:focus { outline: 3px solid #06c; }
+</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to main content</a>
+  <nav aria-label="Primary">
+    <a href="#a">Section A</a>
+    <a href="#b">Section B</a>
+  </nav>
+  <main id="main">
+    <h1>Clean page title</h1>
+    <h2>A section</h2>
+    <h3>A subsection</h3>
+
+    <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7" alt="A decorative divider">
+
+    <form>
+      <label>Full name <input type="text" id="name"></label>
+      <label>Email <input type="email" id="email"></label>
+      <button type="submit">Submit</button>
+    </form>
+
+    <button id="extra1">Another action</button>
+    <button id="extra2">One more action</button>
+  </main>
+</body>
+</html>

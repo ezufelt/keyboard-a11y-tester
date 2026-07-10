@@ -15,7 +15,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const skillDir = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // scripts/.. = skill root
-const depsInstalled = fs.existsSync(path.join(skillDir, 'node_modules', 'playwright', 'package.json'));
+const depsInstalled =
+  fs.existsSync(path.join(skillDir, 'node_modules', 'playwright', 'package.json')) &&
+  fs.existsSync(path.join(skillDir, 'node_modules', '@guidepup', 'virtual-screen-reader', 'package.json'));
 
 const result = {
   deps_installed: depsInstalled,

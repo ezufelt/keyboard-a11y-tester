@@ -1,7 +1,7 @@
 {
   "name": "keyboard-a11y-tester",
   "description": "Drive a real browser keyboard-only to test whether a keyboard-only user can complete a task, and report evidence-linked WCAG findings.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Everett Zufelt"
   },
