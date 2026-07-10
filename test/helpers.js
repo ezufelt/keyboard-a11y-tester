@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 const execFileP = promisify(execFile);
@@ -19,6 +20,77 @@ const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 
 export function fixtureUrl(name) {
   return 'file://' + path.join(FIXTURES_DIR, name);
+}
+
+// storageState's localStorage injection needs a real HTTP(S) origin — Chromium
+// rejects it for file:// pages ("origin 'null' is not supported"). Fixtures
+// that need to prove storageState was applied must be served, not opened
+// directly. Caller must call close() when done.
+export function serveFixtureHttp(name) {
+  const html = fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8');
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(html);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      resolve({ origin, url: origin + '/', close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
+// Writes a minimal Playwright storageState file seeding localStorage for one
+// origin, in outDir so it's cleaned up alongside the rest of the test's output.
+export function writeStorageState(outDir, origin, localStorageEntries) {
+  const file = path.join(outDir, 'storage-state.json');
+  fs.writeFileSync(file, JSON.stringify({ cookies: [], origins: [{ origin, localStorage: localStorageEntries }] }));
+  return file;
+}
+
+// Serves HTML that differs based on a session cookie, inspected server-side —
+// real login cookies are frequently httpOnly (invisible to page JS), so this
+// is the realistic shape for cookie-based auth, unlike a client-side
+// localStorage check. Proves the cookie was actually sent by the browser
+// (i.e. that storageState applied it), not just present in the seed file.
+export function serveCookieGatedHttp(cookieName, expectedValue) {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      const cookies = Object.fromEntries(
+        (req.headers.cookie || '').split(';').map((c) => c.trim()).filter(Boolean).map((c) => {
+          const i = c.indexOf('=');
+          return [c.slice(0, i), decodeURIComponent(c.slice(i + 1))];
+        }),
+      );
+      const authed = cookies[cookieName] === expectedValue;
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Fixture: cookie-gated content</title>
+<style>a:focus, button:focus { outline: 3px solid #06c; }</style></head>
+<body><main id="main"><h1>Cookie-gated fixture</h1>
+${authed ? '<button id="secret">Secret dashboard</button>' : '<a id="locked" href="#">Please log in</a>'}
+</main></body></html>`);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      resolve({ origin, url: origin + '/', close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
+// Writes a minimal Playwright storageState file seeding one cookie, in outDir
+// so it's cleaned up alongside the rest of the test's output.
+export function writeStorageStateCookie(outDir, origin, cookie) {
+  const domain = new URL(origin).hostname;
+  const file = path.join(outDir, 'storage-state-cookie.json');
+  fs.writeFileSync(file, JSON.stringify({
+    cookies: [{
+      name: cookie.name, value: cookie.value, domain, path: '/',
+      expires: -1, httpOnly: true, secure: false, sameSite: 'Lax',
+    }],
+    origins: [],
+  }));
+  return file;
 }
 
 export function tmpOutDir() {
@@ -56,9 +128,10 @@ function readOutputs(outDir, viewport) {
 }
 
 // Runs the batch (blind Tab-crawl) mode to completion and returns parsed output.
-export async function runBatch({ url, persona = 'all', viewport = 'desktop', outDir, maxSteps }) {
+export async function runBatch({ url, persona = 'all', viewport = 'desktop', outDir, maxSteps, storageState }) {
   const args = [RUNNER, '--url', url, '--viewport', viewport, '--persona', persona, '--out', outDir];
   if (maxSteps) args.push('--max-steps', String(maxSteps));
+  if (storageState) args.push('--storage-state', storageState);
   const { stdout, stderr } = await execFileP('node', args, { cwd: REPO_ROOT, timeout: 55_000 });
   return { stdout, stderr, ...readOutputs(outDir, viewport) };
 }
@@ -66,9 +139,10 @@ export async function runBatch({ url, persona = 'all', viewport = 'desktop', out
 // Starts a live `serve` session in the background; resolves once it prints
 // READY. Callers MUST call stopServe() in a finally block -- the served
 // browser stays alive (and the process keeps running) until `stop` is called.
-export function startServe({ url, persona = 'all', viewport = 'desktop', port, outDir }) {
+export function startServe({ url, persona = 'all', viewport = 'desktop', port, outDir, storageState }) {
   return new Promise((resolve, reject) => {
     const args = [RUNNER, 'serve', '--url', url, '--viewport', viewport, '--persona', persona, '--port', String(port), '--out', outDir];
+    if (storageState) args.push('--storage-state', storageState);
     const proc = spawn('node', args, { cwd: REPO_ROOT });
     let out = '';
     let err = '';

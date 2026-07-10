@@ -59,10 +59,20 @@ function resolveStorageState(arg) {
   if (!arg) return null;
   const p = path.resolve(arg);
   if (!fs.existsSync(p)) { log(`Storage state file not found: ${p}`); process.exit(1); }
+  let parsed;
   try {
-    JSON.parse(fs.readFileSync(p, 'utf8'));
+    parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   } catch (err) {
     log(`Storage state file is not valid JSON: ${p}\n  ${err.message}`);
+    process.exit(1);
+  }
+  // Playwright silently no-ops an unrecognized shape rather than erroring, which
+  // would defeat the point of validating at all: the run would proceed fully
+  // logged-out while claiming --storage-state was applied. A real export always
+  // has both arrays (even if one is empty).
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) {
+    log(`Storage state file is valid JSON but not a Playwright storageState export ` +
+        `(expected "cookies" and "origins" arrays): ${p}`);
     process.exit(1);
   }
   return p;
@@ -1527,7 +1537,7 @@ async function cmdServe(args) {
   });
   writeJson(paths.stepsJson, []);
 
-  log(`  ✓ startup checks passed · navigated ${page.url()}` + (storageState ? ` · storage state loaded` : ''));
+  log(`  ✓ startup checks passed · navigated ${page.url()}` + (storageState ? ` · storage state loaded (${storageState})` : ''));
   process.stdout.write(`READY ${dir}\n`);
   // Stay alive until `stop` writes the STOP file (keeps the browser persistent).
   await new Promise((resolve) => {

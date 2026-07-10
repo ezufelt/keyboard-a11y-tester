@@ -1,6 +1,6 @@
 {
   "name": "keyboard-a11y-tester",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keyboard-only + screen-reader web accessibility tester: drives a real browser keyboard-only and emits evidence-linked WCAG findings for both personas",
   "license": "MIT",
   "type": "module",

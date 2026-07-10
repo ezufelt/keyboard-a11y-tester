@@ -102,7 +102,8 @@ node scripts/runner.mjs stop    <session-dir>
 
 Options: `--out <dir>` (override the temp output root), `--viewport desktop|mobile`,
 `--max-steps <n>` (blind crawl), `--port <n>` (session), `--persona keyboard|screen-reader|all`
-(default `all` — both personas in one pass). Keys:
+(default `all` — both personas in one pass), `--storage-state <file>` (launch the browser
+already authenticated — see "Authenticated runs" below). Keys:
 `Tab Shift+Tab Enter Space Escape ArrowUp ArrowDown ArrowLeft ArrowRight Home End`; text is
 entered with `--type` (real keyboard typing, never `.fill()`). Run each viewport separately.
 
@@ -113,6 +114,22 @@ focused control matches by name/role. State persists in the browser across `step
 
 Optional: instead of `--url` you can pass a saved scenario file (see
 `test-cases/TEMPLATE.test.yaml`).
+
+### Authenticated runs
+
+Pages behind a login can't be tested with a fresh, logged-out browser. Pass a Playwright
+`storageState` JSON file with `--storage-state <file>` to start the browser with its cookies
+and localStorage already loaded (e.g. an already-logged-in session). Generate one with
+`context.storageState({ path: 'auth.json' })` or `npx playwright codegen --save-storage=auth.json <url>`.
+The file is validated (exists, parses as JSON, and looks like a real storageState export —
+i.e. has `cookies`/`origins` arrays) before the browser launches — a missing or malformed file
+fails the run immediately rather than silently testing the logged-out site. In `serve` mode
+it's applied once at launch and the session browser keeps the state alive for every subsequent
+`step`.
+
+**A storageState file holds live session cookies/tokens — treat it as a secret.** Don't commit
+it; `.gitignore` already excludes `auth.json`, `storageState.json`, and `*storage-state*.json`,
+but a differently-named file won't be caught automatically.
 
 ## What the runner does (deterministic layer)
 

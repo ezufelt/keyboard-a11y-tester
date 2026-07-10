@@ -31,6 +31,11 @@ since the runner launches and drives its own Chromium instance per invocation:
   since that's a different code path than the batch crawl.
 - `test/contract.spec.js` — `trace.json`/`deterministic-findings.json` keep their
   documented shape.
+- `test/storage-state.spec.js` — `--storage-state` actually seeds the browser context,
+  both via localStorage and via a cookie inspected server-side (real logins are usually
+  httpOnly cookies), using fixtures served over a local HTTP origin since Chromium rejects
+  storageState's localStorage injection for `file://` pages. Covers both batch and `serve`
+  mode, and fails fast on a missing, invalid-JSON, or wrong-shape file.
 
 If you add a new deterministic check or a new fixture defect, add or extend a fixture in
 `test/fixtures/` and a corresponding assertion rather than only verifying manually. If you
