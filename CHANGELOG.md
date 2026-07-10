@@ -14,6 +14,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - ESLint (flat config) and a `npm run lint` script.
 - CI now also runs `scripts/setup-check.mjs` and the linter, in addition to the functional
   test suite.
+- New deterministic check, **3.3.2 (AA, keyboard)**: flags a file input named only by the
+  user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but
+  no author label conveys the field's purpose. Adds an additive `name_source` field (plus
+  `input_type` on steps) captured from CDP's winning ACCNAME source.
 
 ### Fixed
 - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` descriptions still

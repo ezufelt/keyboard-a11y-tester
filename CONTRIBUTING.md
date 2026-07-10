@@ -58,6 +58,11 @@ If you add a new deterministic check or a new fixture defect, add or extend a fi
 touched something not exercised above (e.g. CAPTCHA compat), still verify manually and say
 so in the PR description — the suite doesn't cover everything yet.
 
+A new WCAG check touches docs in three places, not one — update all of them in the same PR:
+the short table in `README.md`, the full-detail table in `docs/interface.md` (the
+authoritative version), and the persona summary in `SKILL.md`. Also add an entry under
+`[Unreleased]` in `CHANGELOG.md`.
+
 CI runs `setup-check.mjs`, the linter, and this suite on every PR (`.github/workflows/test.yml`).
 
 ## Design constraints to respect

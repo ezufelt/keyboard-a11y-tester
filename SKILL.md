@@ -129,7 +129,8 @@ Keyboard persona (per focus stop visited):
 - **2.4.7 (AA)** focus indicator PRESENT on each stop (presence only — 2.4.7 sets no size bar).
 - **2.4.13 (AAA, informative)** focus-appearance strength (area + 3:1 contrast). Advisory only.
 - **1.4.1** indicator not colour-only · **2.1.2** focus stalls (trap) · **2.4.1** skip link ·
-  **2.4.3** positive tabindex · **3.2.1** context change on focus · **4.1.2** missing accessible name.
+  **2.4.3** positive tabindex · **3.2.1** context change on focus · **3.3.2** file input named only
+  by the UA default ("Choose File", no author label) · **4.1.2** missing accessible name.
 
 Screen-reader persona (from the page-wide census + live announcements):
 - **1.1.1** images with no accessible name (missing alt/aria-label).

@@ -36,6 +36,23 @@ test.describe('seeded-defect fixtures', () => {
     }
   });
 
+  test('unlabeled-file-input.html: 3.3.2 (UA-default name) fires for the bare file input only', async () => {
+    const outDir = tmpOutDir();
+    try {
+      const { findings } = await runBatch({ url: fixtureUrl('unlabeled-file-input.html'), persona: 'keyboard', outDir, maxSteps: 10 });
+      const f = findings.find((x) => x.wcag === '3.3.2');
+      expect(f, JSON.stringify(findings, null, 2)).toBeTruthy();
+      // The label-wrapped file input and the labeled text input must not fire:
+      // exactly one control (the bare one) backs this finding.
+      expect(f.evidence.length).toBe(1);
+      // The bare file input is NOT a 4.1.2 missing-name case -- ACCNAME gives
+      // it the UA's own "Choose File", which is exactly why 3.3.2 exists here.
+      expect(findings.some((x) => x.wcag === '4.1.2')).toBe(false);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('clean.html: zero AA (pass/fail) findings', async () => {
     const outDir = tmpOutDir();
     try {

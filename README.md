@@ -117,6 +117,7 @@ informative.**
 | 2.4.1 | AA | keyboard | No skip link |
 | 2.4.3 | AA | keyboard | Positive `tabindex` |
 | 3.2.1 | AA | keyboard | Context change from focus alone |
+| 3.3.2 | AA | keyboard | File input named only by the user-agent default ("Choose File") |
 | 4.1.2 | AA | keyboard | Focusable control with no accessible name |
 | 1.1.1 | AA | screen-reader | Missing alt text/aria-label |
 | 1.3.1 | AA | screen-reader | Heading level skip |
