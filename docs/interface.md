@@ -101,8 +101,6 @@ from a `*.test.yaml` file, or — when run from `--url` — the URL's hostname w
   session-<viewport>/                 # live mode (serve/observe/step/finish)
     session.json                      # live session state
     steps.json                        # accumulated step records
-    frames/rest.png                   # baseline screenshot (no keystroke sent yet)
-    frames/full_NNNN.png              # full-page screenshot per step
     screenshots/step_NNNN.png
     sr-census.json                    # running per-URL census (screen-reader persona)
     STOP                              # sentinel file written by `stop`
@@ -269,9 +267,10 @@ A crop of the full-page screenshot around the focused element, inflated by 8px o
 side (to capture outline/box-shadow rings that render outside the element's border box).
 Written only when the focused element has a usable bounding box (width and height both
 ≥ 1px); otherwise the corresponding step's `focused_region_screenshot` is `null`. In live
-mode, an additional uncropped `frames/full_NNNN.png` is kept per step (used by `finish` to
-compute focus-visible metrics), plus a one-time `frames/rest.png` baseline captured before
-any keystroke.
+mode, the uncropped full-page frame per step (used by `finish` to compute focus-visible
+metrics) and the one-time pre-keystroke baseline frame are kept in memory inside the
+`serve` process rather than written to disk — the agent never reads them, only the
+cropped `screenshots/step_NNNN.png`.
 
 ## WCAG checks
 

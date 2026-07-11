@@ -7,6 +7,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Live sessions (`serve`/`observe`/`step`/`finish`/`stop`): `serve` now holds one persistent
+  `page`/CDP session and in-memory session state (steps, screen-reader log position, census,
+  CAPTCHA-compat flag, full-page frames) for the whole session, exposed over a Unix-domain
+  control socket (`control.sock`). `observe`/`step`/`finish`/`stop` are now thin socket clients
+  instead of each opening its own `chromium.connectOverCDP()` handshake plus a fresh CDP session
+  (`DOM.enable`/`Accessibility.enable`) on every single keystroke. `connectSession()` is removed.
+  Measured ~9% faster per `step` call; the rest of per-step latency is Node process cold-start
+  and the full-page screenshot capture, both inherent to the one-CLI-call-per-keystroke model.
+  The stdout/on-disk contract (`session.json`, `steps.json`, `screenshots/step_NNNN.png`,
+  `trace.json`, etc.) is unchanged — no test or doc changes needed for this part.
+- Live sessions no longer round-trip full-page screenshots through disk. `frames/full_NNNN.png`
+  and `frames/rest.png` are now kept in the `serve` process's memory and fed directly to the
+  focus-visible/appearance computation in `finish`, instead of being written per step and read
+  back at the end. The cropped `screenshots/step_NNNN.png` (the one artifact the invoking agent
+  actually reads) is unaffected. `docs/interface.md`'s directory layout updated to match.
+- Batch mode: viewports (e.g. desktop + mobile) now crawl concurrently instead of sequentially in
+  `main()`, since each already gets its own isolated context/page/CDP session.
+- Per-step capture now runs independent reads of "current page state" concurrently instead of
+  sequentially: `captureFocused`'s geometry collection and AX lookup, and (in both the batch
+  crawl's `recordStep` and the live session's step handler) the focus capture, full-page
+  screenshot, and screen-reader capture.
+
 ## [0.6.0] - 2026-07-11
 
 ### Added
