@@ -20,6 +20,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { validatePersona, resolveStorageState, makeFinding, parseArgs, pickViewport } from './lib/cli-helpers.mjs';
+import { relLum } from './lib/color.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,63 +34,8 @@ const outRootFrom = (arg) => (arg ? path.resolve(arg) : DEFAULT_OUT_ROOT);
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv) {
-  const args = { _: [], out: null, viewport: null, maxSteps: 150, press: null, type: null, port: null, storageState: null, persona: 'all' };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--out') args.out = argv[++i];
-    else if (a === '--viewport') args.viewport = argv[++i];
-    else if (a === '--max-steps') args.maxSteps = parseInt(argv[++i], 10);
-    else if (a === '--press') args.press = argv[++i];
-    else if (a === '--type') args.type = argv[++i];
-    else if (a === '--port') args.port = parseInt(argv[++i], 10);
-    else if (a === '--url') args.url = argv[++i];
-    else if (a === '--goal') args.goal = argv[++i];
-    else if (a === '--storage-state') args.storageState = argv[++i];
-    else if (a === '--persona') args.persona = argv[++i];
-    else if (a === '-h' || a === '--help') args.help = true;
-    else args._.push(a);
-  }
-  return args;
-}
-
-// Resolves --storage-state to an absolute path, failing fast if it is missing or
-// not valid JSON: a silently-ignored auth file would make the whole run test the
-// logged-out site while claiming to test the logged-in one.
-function resolveStorageState(arg) {
-  if (!arg) return null;
-  const p = path.resolve(arg);
-  if (!fs.existsSync(p)) { log(`Storage state file not found: ${p}`); process.exit(1); }
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch (err) {
-    log(`Storage state file is not valid JSON: ${p}\n  ${err.message}`);
-    process.exit(1);
-  }
-  // Playwright silently no-ops an unrecognized shape rather than erroring, which
-  // would defeat the point of validating at all: the run would proceed fully
-  // logged-out while claiming --storage-state was applied. A real export always
-  // has both arrays (even if one is empty).
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.cookies) || !Array.isArray(parsed.origins)) {
-    log(`Storage state file is valid JSON but not a Playwright storageState export ` +
-        `(expected "cookies" and "origins" arrays): ${p}`);
-    process.exit(1);
-  }
-  return p;
-}
-
-const PERSONAS = new Set(['keyboard', 'screen-reader', 'all']);
 const needsScreenReader = (persona) => persona === 'all' || persona === 'screen-reader';
 const needsKeyboardChecks = (persona) => persona === 'all' || persona === 'keyboard';
-
-function validatePersona(p) {
-  if (!PERSONAS.has(p)) {
-    log(`Invalid --persona: ${p} (expected keyboard|screen-reader|all)`);
-    process.exit(1);
-  }
-  return p;
-}
 
 const USAGE = `
 keyboard-a11y-runner — keyboard-only accessibility runner
@@ -711,15 +658,6 @@ function changedPixels(focusedPng, baselinePng, region) {
 // rings drawn with an outline-offset (which a single close band would miss).
 const RING_SLICES = [0, 3, 6, 9];
 
-// WCAG relative luminance of an 8-bit sRGB colour (for 2.4.13 contrast).
-function relLum(r, g, b) {
-  const lin = (c) => {
-    c /= 255;
-    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-}
-
 // Focus-indicator metrics, computed by diffing the focused frame against a
 // scroll-aligned unfocused baseline (never touches focus programmatically).
 //
@@ -1108,47 +1046,6 @@ const ALLOWED_KEYS = new Set([
 // ---------------------------------------------------------------------------
 // Deterministic findings from the trace
 // ---------------------------------------------------------------------------
-
-function severityFor(wcag) {
-  // Rough default severities; AI layer may refine.
-  return {
-    '2.1.1': 'blocker',
-    '2.1.2': 'blocker',
-    '1.1.1': 'serious',
-    '1.3.1': 'moderate',
-    '1.4.1': 'moderate',
-    '2.4.1': 'moderate',
-    '2.4.3': 'moderate',
-    '2.4.7': 'serious',
-    '2.4.13': 'minor',
-    '3.2.1': 'serious',
-    '3.3.2': 'moderate',
-    '4.1.2': 'serious',
-    '4.1.3': 'moderate',
-  }[wcag] || 'moderate';
-}
-
-// conformance_level: 'AA' findings are pass/fail; 'AAA' findings are INFORMATIVE
-// (advisory) — never a scenario failure on their own.
-function makeFinding({ id, wcag, confidence, viewport, goalId, summary, impact, evidence, severity, level, url, locations, persona, evidenceKind }) {
-  return {
-    id,
-    wcag,
-    source: 'deterministic',
-    persona: persona || 'keyboard',          // 'keyboard' | 'screen-reader'
-    evidence_kind: evidenceKind || 'step_id', // 'step_id' | 'selector'
-    conformance_level: level || 'AA',
-    confidence,
-    severity: severity || severityFor(wcag),
-    viewport,
-    goal_id: goalId || null,
-    url: url || null,               // page the evidence was observed on
-    locations: locations || [],     // human locators (landmark / heading) on that page
-    summary,
-    persona_impact: impact,
-    evidence: evidence || [],
-  };
-}
 
 // Human locator for a focus stop: "<landmark>, under heading “…”".
 function locationOf(s) {
@@ -1914,13 +1811,6 @@ function synthCase(url, goalText) {
   };
 }
 
-function pickViewport(testCase, name) {
-  const vps = testCase.viewports || [{ name: 'desktop', width: 1280, height: 800 }];
-  const vp = name ? vps.find((v) => v.name === name) : vps[0];
-  if (!vp) { log(`No matching viewport: ${name}`); process.exit(1); }
-  return vp;
-}
-
 // Compact observation the agent reads to decide the next keystroke.
 function observationOf(step) {
   const cfs = step.computed_focus_style || {};
@@ -1958,11 +1848,29 @@ async function connectSession(dir) {
 }
 
 async function cmdServe(args) {
-  const persona = validatePersona(args.persona || 'all');
+  let persona;
+  try {
+    persona = validatePersona(args.persona || 'all');
+  } catch (err) {
+    log(err.message);
+    process.exit(1);
+  }
   const testCase = args.url ? synthCase(args.url, args.goal) : loadCase(args._[1]);
-  const vp = pickViewport(testCase, args.viewport);
+  let vp;
+  try {
+    vp = pickViewport(testCase, args.viewport);
+  } catch (err) {
+    log(err.message);
+    process.exit(1);
+  }
   const port = args.port || 9333;
-  const storageState = resolveStorageState(args.storageState);
+  let storageState;
+  try {
+    storageState = resolveStorageState(args.storageState);
+  } catch (err) {
+    log(err.message);
+    process.exit(1);
+  }
   const outRoot = outRootFrom(args.out);
   const dir = path.join(outRoot, testCase.id, `session-${vp.name}`);
   const paths = sessionPaths(dir);
@@ -2193,7 +2101,13 @@ async function cmdStop(args) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    log(err.message);
+    process.exit(1);
+  }
 
   // Live-session subcommands.
   const sub = args._[0];
@@ -2209,7 +2123,13 @@ async function main() {
     process.exit(args.help ? 0 : 1);
   }
 
-  const persona = validatePersona(args.persona);
+  let persona;
+  try {
+    persona = validatePersona(args.persona);
+  } catch (err) {
+    log(err.message);
+    process.exit(1);
+  }
   const testCase = args.url ? synthCase(args.url, args.goal) : loadCase(args._[0]);
 
   let viewports = testCase.viewports || [{ name: 'desktop', width: 1280, height: 800 }];
@@ -2227,7 +2147,13 @@ async function main() {
   const outRoot = outRootFrom(args.out);
   const outDir = path.join(outRoot, testCase.id);
   ensureDir(outDir);
-  const storageState = resolveStorageState(args.storageState);
+  let storageState;
+  try {
+    storageState = resolveStorageState(args.storageState);
+  } catch (err) {
+    log(err.message);
+    process.exit(1);
+  }
 
   log(`Test case: ${testCase.id}`);
   log(`Viewports: ${viewports.map((v) => v.name).join(', ')}`);

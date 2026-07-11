@@ -7,6 +7,37 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `test/property.spec.js`: property-based tests (new `fast-check` devDependency) for
+  `severityFor`, `makeFinding`, `validatePersona`, `resolveStorageState`, `parseArgs`,
+  `pickViewport`, and `relLum`.
+- `scripts/lib/cli-helpers.mjs` and `scripts/lib/color.mjs`: the pure, side-effect-free
+  functions above, extracted from `runner.mjs` so they can be imported directly by tests —
+  `runner.mjs` calls `main()` unconditionally at module scope (no `import.meta.url` guard),
+  so importing it directly triggers a live CLI run.
+
+### Fixed
+- `severityFor` used a plain object literal as a lookup map, so a WCAG value colliding with
+  an inherited `Object.prototype` member name (e.g. `"valueOf"`, `"toString"`,
+  `"constructor"`) returned that inherited function instead of falling back to `'moderate'`.
+  Not reachable today (WCAG values are always internal constants), but caught by a fast-check
+  property test and corrected with `Object.hasOwn()`.
+- `--max-steps` with a non-positive-integer value (a typo, or `0`/negative) used to parse to
+  `NaN` or a non-positive number and propagate silently: the crawl loop
+  (`for (let i = 1; i <= maxSteps; i++)`) never executes when `maxSteps` is `NaN` or `<= 0`,
+  so the run silently did zero steps and exited as if it had passed. Now validated in
+  `parseArgs` and rejected with a one-line error (exit 1).
+- `validatePersona`, `resolveStorageState`, `parseArgs`, and `pickViewport` called
+  `process.exit(1)` directly on invalid input, making them impossible to unit-test in-process
+  (a fuzzed invalid input would kill the test worker). They now throw a plain `Error`, caught
+  at every CLI call site to preserve the exact prior behavior (one-line message, exit 1, no
+  stack trace).
+
+### Changed
+- Local (non-CI) Playwright worker count now scales to `os.cpus().length` (capped at 8)
+  instead of a fixed `4` — roughly halves local full-suite wall-clock time on multi-core
+  machines (~90s → ~48s measured on an 8-core machine). CI stays pinned at `2` workers.
+
 ## [0.5.0] - 2026-07-10
 
 ### Added

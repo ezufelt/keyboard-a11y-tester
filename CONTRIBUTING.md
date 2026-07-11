@@ -52,6 +52,15 @@ since the runner launches and drives its own Chromium instance per invocation:
   httpOnly cookies), using fixtures served over a local HTTP origin since Chromium rejects
   storageState's localStorage injection for `file://` pages. Covers both batch and `serve`
   mode, and fails fast on a missing, invalid-JSON, or wrong-shape file.
+- `test/property.spec.js` — property-based tests (`fast-check`) over the pure functions in
+  `scripts/lib/` (`parseArgs`, `validatePersona`, `resolveStorageState`, `pickViewport`,
+  `severityFor`, `makeFinding`, `relLum`). Unlike every other file above, this one imports
+  those functions directly and runs in-process — no subprocess, no browser. If you add a new
+  pure, side-effect-free function with real invariants (parses input, validates input,
+  computes a value with a checkable range/shape), consider a property test here rather than
+  only example-based cases: this is exactly what caught `severityFor('valueOf')` returning an
+  `Object.prototype` method instead of a severity string, and `--max-steps` with a bad value
+  silently producing a zero-step run instead of a clear error.
 
 If you add a new deterministic check or a new fixture defect, add or extend a fixture in
 `test/fixtures/` and a corresponding assertion rather than only verifying manually. If you
@@ -87,6 +96,10 @@ CI runs `setup-check.mjs`, the linter, and this suite on every PR (`.github/work
 ## Where things live
 
 - `scripts/runner.mjs` — the deterministic runner (CLI, Playwright/CDP driving, checks).
+- `scripts/lib/` — pure, side-effect-free functions pulled out of `runner.mjs` so they can be
+  imported and property-tested directly, without triggering `runner.mjs`'s own `main()`
+  (`cli-helpers.mjs`: arg parsing/validation and finding construction; `color.mjs`: WCAG
+  relative luminance).
 - `scripts/setup-check.mjs` — preflight dependency/browser check.
 - `SKILL.md` — instructions for the agent driving this as a Claude Code skill.
 - `references/architecture.md` — how the runner is built, for anyone extending it.
