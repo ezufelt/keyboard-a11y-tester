@@ -70,7 +70,7 @@ Signals the running `serve` process to close the browser and exit. No stdout out
 | `--goal "<text>"` | string | — | default mode, `serve` (with `--url`) | Free-text task description; becomes the synthesized scenario's goal intent. |
 | `--out <dir>` | path | temp dir (`${TMPDIR}/keyboard-a11y-tester`) | all | Overrides the output root. |
 | `--viewport <name>` | string | first viewport in the scenario (`desktop` if none declared) | default mode, `serve` | Selects/filters which viewport(s) run. |
-| `--max-steps <n>` | integer | `150` | default mode | Cap on Tab-presses during the blind crawl. |
+| `--max-steps <n>` | integer | `150` | default mode | Cap on Tab-presses during the blind crawl. Must parse to a positive integer; any other value exits 1 with a clear error instead of silently running zero steps. |
 | `--persona <keyboard\|screen-reader\|all>` | enum | `all` | all | Restricts which persona's checks run. Invalid values exit 1. |
 | `--port <n>` | integer | `9333` | `serve` | CDP remote-debugging port for the live session. |
 | `--press <Key>` | enum (see key list above) | `Tab` | `step` | The single keystroke to send. |

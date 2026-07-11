@@ -35,9 +35,14 @@ table: `docs/interface.md`. Usage: `docs/usage.md`.
 
 ## Architecture
 
-There is no `src/` directory. The entire tool is `scripts/runner.mjs`, dispatched by `main()`
-on the first CLI arg to one of: `serve`, `observe`, `step`, `finish`, `stop`, or (no subcommand)
-the default batch blind Tab-crawl requiring `--url` or a `*.test.yaml` path.
+There is no `src/` directory. The tool is `scripts/runner.mjs`, dispatched by `main()` on the
+first CLI arg to one of: `serve`, `observe`, `step`, `finish`, `stop`, or (no subcommand) the
+default batch blind Tab-crawl requiring `--url` or a `*.test.yaml` path. A handful of pure,
+side-effect-free functions live in `scripts/lib/` instead (`cli-helpers.mjs`: `parseArgs`,
+`validatePersona`, `resolveStorageState`, `pickViewport`, `severityFor`, `makeFinding`;
+`color.mjs`: `relLum`) — `runner.mjs` calls `main()` unconditionally at module scope with no
+`import.meta.url` guard, so importing it directly (e.g. from a test) triggers a live CLI run;
+these functions are factored out so they can be imported and property-tested in isolation.
 
 **Browser driving**: `chromium.launch()` (headless, SwiftShader for real pixel rendering), driven
 only via real `page.keyboard.press()`/`.type()` — never `.click()`/`.focus()`, never synthetic
@@ -84,4 +89,10 @@ fixtures assert expected findings, plus a false-positive guard via `clean.html`)
 `persona-parity.spec.js`, `cross-viewport.spec.js`, `live-session.spec.js` (`serve`/`observe`/
 `step`/`finish`/`stop` round trip), `storage-state.spec.js` (auth seeding).
 
-`playwright.config.js`: `testDir: './test'`, `fullyParallel: true`, `workers: 4` (2 in CI).
+`test/property.spec.js` is the one exception to the black-box-subprocess pattern above: it
+imports the pure functions in `scripts/lib/` directly and fuzzes them with `fast-check`
+(`severityFor`, `makeFinding`, `validatePersona`, `resolveStorageState`, `parseArgs`,
+`pickViewport`, `relLum`). Runs in-process, no browser, no subprocess.
+
+`playwright.config.js`: `testDir: './test'`, `fullyParallel: true`, `workers:` auto-scales to
+the local machine's CPU count (capped at 8) outside CI, pinned to `2` in CI.
