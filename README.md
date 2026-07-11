@@ -1,6 +1,7 @@
 # keyboard-a11y-tester
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13561/badge)](https://www.bestpractices.dev/projects/13561)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ezufelt/keyboard-a11y-tester/badge)](https://scorecard.dev/viewer/?uri=github.com/ezufelt/keyboard-a11y-tester)
 
 An AI-assisted web accessibility tester that behaves like two W3C personas at once: a
 **keyboard-only** user ("Ade") and a **screen-reader** user ("Lakshmi"). It drives a page
