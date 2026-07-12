@@ -38,6 +38,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   informative 2.4.13 sub-check, never AA pass/fail. The guard now asserts zero **AA** findings
   and separately asserts the skip-link's measured contrast stays ≥ 3:1 (the real
   contrast-corruption regression this test exists to catch).
+- `test/perf.spec.js`'s two page-readiness timing assertions used a 5000ms budget, which failed
+  consistently on `macos-26` CI (observed 5.3-6.4s) even though `waitForReady` was behaving
+  correctly — GitHub Actions' macOS runners pay higher Node/Chromium launch overhead than
+  `ubuntu-latest`/`windows-latest` (observed ~2-3s and ~3.5-4.6s respectively for the same runs).
+  Budget raised to 7000ms, still far below the ~9s+ a genuine "never settles" regression would
+  take (it burns the full 8s `maxWaitMs` on top of launch overhead).
 
 ## [0.6.0] - 2026-07-11
 
