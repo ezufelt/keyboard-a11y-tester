@@ -19,6 +19,7 @@ import pixelmatch from 'pixelmatch';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { validatePersona, resolveStorageState, makeFinding, parseArgs, pickViewport } from './lib/cli-helpers.mjs';
 import { relLum } from './lib/color.mjs';
@@ -347,27 +348,33 @@ async function captureFocused(cdp, page) {
   if (!objectId) {
     return { isBody: true, selector: 'body', ax: null };
   }
-  let geom;
-  try {
-    const { result } = await cdp.send('Runtime.callFunctionOn', {
-      objectId,
-      functionDeclaration: COLLECT_ACTIVE,
-      arguments: [{ objectId }],
-      returnByValue: true,
-    });
-    geom = result.value;
-  } catch {
-    geom = { isBody: false, selector: '(unknown)', bbox: null, domOrderIndex: -1 };
-  }
-  let ax = null;
-  try {
-    const { node } = await cdp.send('DOM.describeNode', { objectId });
-    if (node && node.backendNodeId) ax = await axForBackendNode(cdp, node.backendNodeId);
-  } catch {
-    /* AX best-effort */
-  } finally {
-    await cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
-  }
+  // Geometry collection and the AX lookup both only need `objectId` and don't
+  // depend on each other's result -- run them concurrently instead of paying
+  // two sequential CDP round trips.
+  const collectGeom = async () => {
+    try {
+      const { result } = await cdp.send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: COLLECT_ACTIVE,
+        arguments: [{ objectId }],
+        returnByValue: true,
+      });
+      return result.value;
+    } catch {
+      return { isBody: false, selector: '(unknown)', bbox: null, domOrderIndex: -1 };
+    }
+  };
+  const collectAx = async () => {
+    try {
+      const { node } = await cdp.send('DOM.describeNode', { objectId });
+      if (node && node.backendNodeId) return await axForBackendNode(cdp, node.backendNodeId);
+    } catch {
+      /* AX best-effort */
+    }
+    return null;
+  };
+  let [geom, ax] = await Promise.all([collectGeom(), collectAx()]);
+  await cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
 
   if (!geom.isBody && geom.tag === 'iframe' && page) {
     const { handle, crossedFrame } = await resolveInnerFocus(page);
@@ -850,17 +857,25 @@ function findNearbyIndicatorBox(focusedPng, baselinePng, ownBox) {
 // locator region, and a focused-region screenshot; appends the full frame for
 // the focus-visible neighbour diff. Returns { step, contextChange }.
 async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevStep, startUrl, fullFrames, persona = 'all', srState }) {
-  const focused = await captureFocused(cdp, page);
+  // These three reads of "current page state" are independent of each other --
+  // run them concurrently instead of paying their round trips one after another.
+  const capturePixelDiff = needsKeyboardChecks(persona);
+  const captureSr = needsScreenReader(persona) && srState;
+  const [focused, shotBuffer, sr] = await Promise.all([
+    captureFocused(cdp, page),
+    capturePixelDiff ? page.screenshot() : Promise.resolve(null),
+    captureSr ? captureScreenReader(page, srState.logLength) : Promise.resolve(null),
+  ]);
+
   const focusMoved = !prevStep || prevStep.active_element_selector !== focused.selector;
   let contextChange = null;
   if (focused.url && focused.url !== startUrl) {
     contextChange = { step: index, from: startUrl, to: focused.url };
   }
 
-  const capturePixelDiff = needsKeyboardChecks(persona);
   let shotRel = null;
   if (capturePixelDiff) {
-    const framePng = PNG.sync.read(await page.screenshot());
+    const framePng = PNG.sync.read(shotBuffer);
     fullFrames.push(framePng);
     if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
       const crop = cropPng(framePng, inflate(focused.bbox));
@@ -870,12 +885,9 @@ async function recordStep(page, cdp, { keystroke, index, screenshotsDir, prevSte
   }
 
   let srAnnouncement = null;
-  if (needsScreenReader(persona) && srState) {
-    const sr = await captureScreenReader(page, srState.logLength);
-    if (sr) {
-      srState.logLength = sr.log_length;
-      srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
-    }
+  if (captureSr && sr) {
+    srState.logLength = sr.log_length;
+    srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
   }
 
   const step = {
@@ -1774,14 +1786,12 @@ function sessionPaths(dir) {
     dir,
     sessionJson: path.join(dir, 'session.json'),
     stepsJson: path.join(dir, 'steps.json'),
-    framesDir: path.join(dir, 'frames'),
     screenshotsDir: path.join(dir, 'screenshots'),
-    restPng: path.join(dir, 'frames', 'rest.png'),
     stopFile: path.join(dir, 'STOP'),
+    controlSock: path.join(dir, 'control.sock'),
     srCensusJson: path.join(dir, 'sr-census.json'),
   };
 }
-const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 const writeJson = (p, o) => fs.writeFileSync(p, JSON.stringify(o, null, 2));
 
 const VIEWPORT_PRESETS = {
@@ -1834,17 +1844,197 @@ function observationOf(step) {
   };
 }
 
-async function connectSession(dir) {
+// ---------------------------------------------------------------------------
+// Live-session control channel. `serve` holds the one persistent page/cdp and
+// an in-memory `state` object for the whole session and exposes them over a
+// Unix-domain socket (control.sock) -- observe/step/finish/stop become thin
+// clients that send one NDJSON request and read one NDJSON response, instead
+// of each paying a fresh chromium.connectOverCDP() handshake + CDP session +
+// DOM/Accessibility enable on every single keystroke.
+// ---------------------------------------------------------------------------
+
+// Low-level one-shot request: connect, write one line, read one line back,
+// resolve with `data` or reject with `error`. Does not check whether the
+// session dir looks valid -- `sendControlRequest` below does that; `stop`
+// deliberately calls this directly so it keeps working even against a
+// half-torn-down or never-started session (see cmdStop).
+function socketRequest(paths, reqObj) {
+  return new Promise((resolve, reject) => {
+    const conn = net.createConnection(paths.controlSock);
+    let buf = '';
+    conn.on('connect', () => conn.write(JSON.stringify(reqObj) + '\n'));
+    conn.on('data', (chunk) => { buf += chunk.toString('utf8'); });
+    conn.on('end', () => {
+      try {
+        const res = JSON.parse(buf.trim());
+        if (res.ok) resolve(res.data);
+        else reject(new Error(res.error || 'request failed'));
+      } catch (e) { reject(e); }
+    });
+    conn.on('error', reject);
+  });
+}
+
+// Same failure UX as the old connectSession(): a missing session.json exits 1
+// before ever touching the socket; an unreachable socket (serve crashed, or
+// already stopped) exits 1 too.
+async function sendControlRequest(dir, reqObj) {
   const paths = sessionPaths(dir);
   if (!fs.existsSync(paths.sessionJson)) { log(`No session at ${dir}. Run \`serve\` first.`); process.exit(1); }
-  const session = readJson(paths.sessionJson);
-  const browser = await chromium.connectOverCDP(session.cdpUrl);
-  const ctx = browser.contexts()[0];
-  const page = ctx.pages()[0];
-  const cdp = await ctx.newCDPSession(page);
-  await cdp.send('DOM.enable');
-  await cdp.send('Accessibility.enable');
-  return { paths, session, browser, ctx, page, cdp };
+  try {
+    return await socketRequest(paths, reqObj);
+  } catch (err) {
+    log(`Session at ${dir} is not running (control socket unreachable): ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// --- Request handlers: run inside the long-lived `serve` process against its
+// one in-memory `state`, never re-reading session.json/steps.json between
+// calls the way the old per-call connectSession() path had to.
+
+async function handleObserve(state) {
+  const focused = await captureFocused(state.cdp, state.page);
+  const obs = {
+    index: state.index,
+    note: 'current state (no keystroke sent)',
+    url: focused.url ?? state.startUrl,
+    focused: {
+      selector: focused.selector, tag: focused.tag ?? null,
+      name: focused.ax?.name ?? null, role: focused.ax?.role ?? null, states: focused.ax?.states ?? null,
+    },
+  };
+  if (needsScreenReader(state.persona)) {
+    obs.sr_last_spoken_phrase = await state.page
+      .evaluate(() => window.__vsr?.virtual?.lastSpokenPhrase())
+      .catch(() => null);
+  }
+  return obs;
+}
+
+async function handleStep(state, req) {
+  const index = state.index + 1;
+
+  let keystroke, activating = false;
+  if (req.type != null) {
+    await state.page.keyboard.type(req.type);
+    keystroke = 'type:' + JSON.stringify(req.type.slice(0, 60));
+  } else {
+    const key = req.press || 'Tab';
+    await state.page.keyboard.press(key === 'Space' ? ' ' : key);
+    keystroke = key;
+    activating = key === 'Enter' || key === 'Space';
+  }
+  await state.page.waitForTimeout(activating ? 250 : 40);
+  if (activating) await state.page.waitForLoadState('domcontentloaded', { timeout: 2000 }).catch(() => {});
+
+  // If this keystroke landed on a page that has a CAPTCHA, apply page-scoped
+  // compatibility once so the CAPTCHA can run (and be tested) — human-approved.
+  let captchaCompatApplied = false;
+  if (!state.captchaCompat && activating) {
+    captchaCompatApplied = await ensureCaptchaCompat(state.ctx, state.page);
+    if (captchaCompatApplied) log(`  ⚠ CAPTCHA detected at ${state.page.url()} — navigator.webdriver suppressed for this page (human-approved)`);
+    state.captchaCompat = state.captchaCompat || captchaCompatApplied;
+  }
+
+  const persona = state.persona;
+  const prev = state.steps[state.steps.length - 1];
+
+  // These three reads of "current page state" are independent of each other --
+  // run them concurrently instead of paying their round trips one after another.
+  const capturePixelDiff = needsKeyboardChecks(persona);
+  const captureSr = needsScreenReader(persona);
+  const [focused, shotBuffer, sr] = await Promise.all([
+    captureFocused(state.cdp, state.page),
+    capturePixelDiff ? state.page.screenshot() : Promise.resolve(null),
+    captureSr ? captureScreenReader(state.page, state.srState.logLength) : Promise.resolve(null),
+  ]);
+
+  let shotRel = null;
+  if (capturePixelDiff) {
+    const framePng = PNG.sync.read(shotBuffer);
+    // Kept in memory for handleFinish's focus-visible diff (see finalizeFocusVisible)
+    // rather than round-tripped through disk -- the agent never reads full frames,
+    // only the cropped screenshots/step_NNNN.png below.
+    state.fullFrames.push(framePng);
+    if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
+      fs.writeFileSync(path.join(state.paths.screenshotsDir, `${stepId(index)}.png`), PNG.sync.write(cropPng(framePng, inflate(focused.bbox))));
+      shotRel = path.join('screenshots', `${stepId(index)}.png`);
+    }
+  }
+
+  let srAnnouncement = null;
+  if (captureSr && sr) {
+    state.srState.logLength = sr.log_length;
+    srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
+  }
+
+  const step = {
+    step_id: stepId(index), index, keystroke_sent: keystroke,
+    active_element_selector: focused.selector, tag: focused.tag ?? null, tabindex: focused.tabindex ?? null,
+    dom_order_index: focused.domOrderIndex ?? -1,
+    ax_name_role_state: focused.ax ? { name: focused.ax.name, role: focused.ax.role, states: focused.ax.states } : null,
+    focus_moved: !prev || prev.active_element_selector !== focused.selector,
+    bounding_box: focused.bbox ?? null, ancestor_boxes: focused.ancestorBoxes ?? [],
+    url: focused.url ?? state.startUrl,
+    text: focused.text ?? '', is_body: !!focused.isBody,
+    computed_focus_style: focused.focusStyle ?? null, region: focused.region ?? null,
+    focused_region_screenshot: shotRel, focus_visible: null,
+    sr_announcement: srAnnouncement,
+  };
+  state.steps.push(step);
+  state.index = index;
+  writeJson(state.paths.stepsJson, state.steps);
+
+  const obs = observationOf(step);
+  if (captchaCompatApplied) obs.captcha_compat_applied = true;
+  return obs;
+}
+
+async function handleFinish(state) {
+  const steps = state.steps;
+  const persona = state.persona;
+
+  if (needsKeyboardChecks(persona)) {
+    finalizeFocusVisible(steps, state.fullFrames, state.restPng);
+  }
+
+  let census = null;
+  if (needsScreenReader(persona)) {
+    // censusStore is kept live by the page.on('load') listener registered
+    // once in cmdServe -- await pendingCensus so a still-in-flight census for
+    // the most recent navigation can't race the check below (same guarantee
+    // the old per-call connectSession()-based fallback gave, just without a
+    // second connection to get it).
+    await state.pendingCensus;
+    census = state.censusStore;
+    const currentUrl = state.page.url();
+    if (!census[currentUrl]) {
+      census[currentUrl] = { captured_at: new Date().toISOString(), ...(await runCensusWithTimeout(state.page)) };
+      writeJson(state.paths.srCensusJson, census);
+    }
+  }
+
+  const findings = deriveAllFindings(
+    { steps, startUrl: state.startUrl, contextChangeOnFocus: null, census },
+    { viewport: state.viewport, goalId: state.goalId, persona }
+  );
+
+  const trace = {
+    test_case_id: state.caseId, viewport: state.viewport, mode: 'driven-live',
+    personas: persona === 'all' ? ['keyboard', 'screen-reader'] : [persona],
+    viewport_size: state.viewportSize, start_url: state.startUrl,
+    goals: state.goals, steps,
+  };
+  writeJson(path.join(state.paths.dir, 'trace.json'), trace);
+  writeJson(path.join(state.paths.dir, 'deterministic-findings.json'),
+    { test_case_id: state.caseId, viewport: state.viewport, mode: 'driven-live', findings });
+  if (needsScreenReader(persona)) {
+    writeJson(path.join(state.paths.dir, 'screen-reader-census.json'),
+      { test_case_id: state.caseId, viewport: state.viewport, mode: 'driven-live', pages: census });
+  }
+  log(`finished: ${steps.length} steps, ${findings.length} deterministic finding(s) → ${state.paths.dir}`);
+  return { steps: steps.length, findings };
 }
 
 async function cmdServe(args) {
@@ -1863,6 +2053,9 @@ async function cmdServe(args) {
     log(err.message);
     process.exit(1);
   }
+  // Kept for backward compatibility (docs/interface.md) and standalone
+  // devtools/CDP debugging of a live session -- no longer used by this file's
+  // own observe/step/finish/stop, which talk to `paths.controlSock` instead.
   const port = args.port || 9333;
   let storageState;
   try {
@@ -1874,9 +2067,9 @@ async function cmdServe(args) {
   const outRoot = outRootFrom(args.out);
   const dir = path.join(outRoot, testCase.id, `session-${vp.name}`);
   const paths = sessionPaths(dir);
-  ensureDir(paths.framesDir);
   ensureDir(paths.screenshotsDir);
   if (fs.existsSync(paths.stopFile)) fs.rmSync(paths.stopFile);
+  if (fs.existsSync(paths.controlSock)) fs.rmSync(paths.controlSock);
 
   // Fail fast, before launching Chromium, if the screen-reader persona's
   // dependency can't be loaded (same philosophy as the :focus-visible gate).
@@ -1895,6 +2088,9 @@ async function cmdServe(args) {
   const disableAnimations = testCase.runtime?.disable_animations !== false;
   const context = await makeContext(browser, vp, disableAnimations, storageState, persona);
   const page = await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('DOM.enable');
+  await cdp.send('Accessibility.enable');
 
   const censusStore = {};
   const censusedUrls = new Set();
@@ -1918,185 +2114,139 @@ async function cmdServe(args) {
   if (needsScreenReader(persona)) await startVsr(page);
   const captchaCompat = await ensureCaptchaCompat(context, page);
   if (captchaCompat) log('  ⚠ CAPTCHA on start page — navigator.webdriver suppressed for this page (human-approved)');
-  if (needsKeyboardChecks(persona)) fs.writeFileSync(paths.restPng, await page.screenshot());
+  // Baseline (nothing focused) frame for the focus-visible diff in handleFinish
+  // -- kept in memory (never read by the agent) rather than written to disk.
+  const restPng = needsKeyboardChecks(persona) ? PNG.sync.read(await page.screenshot()) : null;
 
+  const startUrl = page.url();
+  const goalId = testCase.goals?.[0]?.id || null;
+  const goals = (testCase.goals || []).map((g) => ({ id: g.id, intent: g.intent }));
   writeJson(paths.sessionJson, {
     caseId: testCase.id,
     viewport: vp.name,
     viewport_size: { width: vp.width, height: vp.height },
-    startUrl: page.url(),
+    startUrl,
     cdpUrl: `http://127.0.0.1:${port}`,
-    goalId: testCase.goals?.[0]?.id || null,
-    goals: (testCase.goals || []).map((g) => ({ id: g.id, intent: g.intent })),
+    goalId,
+    goals,
     captchaCompat,
     persona,
-    srLogLength: 0,
-    index: 0,
   });
   writeJson(paths.stepsJson, []);
 
+  // The one in-memory object every socket request handler above operates on --
+  // replaces the old per-call connectSession()/session.json/steps.json
+  // read-modify-write with state that just lives for the process's lifetime.
+  const state = {
+    paths, page, ctx: context, cdp, persona, startUrl, caseId: testCase.id, goalId, goals,
+    viewport: vp.name, viewportSize: { width: vp.width, height: vp.height },
+    steps: [], index: 0, srState: { logLength: 0 },
+    censusStore, censusedUrls, captchaCompat,
+    fullFrames: [], restPng,
+    get pendingCensus() { return pendingCensus; },
+  };
+
+  // Serial dispatch queue: requests run one at a time in arrival order. The
+  // one-keystroke-at-a-time contract (the invoking agent always awaits one
+  // `step` before issuing the next) makes overlap unreachable in practice,
+  // but this makes it structurally impossible to corrupt `state` if it ever
+  // happened — same chaining idiom as `pendingCensus` above.
+  let queue = Promise.resolve();
+  function runSerially(fn) {
+    const result = queue.then(fn);
+    queue = result.catch(() => {});
+    return result;
+  }
+
+  let resolveStop;
+  const stopped = new Promise((resolve) => { resolveStop = resolve; });
+
+  const server = net.createServer((conn) => {
+    let buf = '';
+    conn.on('data', (chunk) => {
+      buf += chunk.toString('utf8');
+      const nl = buf.indexOf('\n');
+      if (nl === -1) return;
+      const line = buf.slice(0, nl);
+      conn.removeAllListeners('data');
+      let req;
+      try {
+        req = JSON.parse(line);
+      } catch (e) {
+        conn.end(JSON.stringify({ ok: false, error: 'bad request: ' + e.message }) + '\n');
+        return;
+      }
+      runSerially(async () => {
+        if (req.cmd === 'observe') return handleObserve(state);
+        if (req.cmd === 'step') return handleStep(state, req);
+        if (req.cmd === 'finish') return handleFinish(state);
+        if (req.cmd === 'stop') return null;
+        throw new Error(`unknown cmd: ${req.cmd}`);
+      })
+        .then((data) => {
+          conn.end(JSON.stringify({ ok: true, data }) + '\n');
+          // Only signal shutdown AFTER the ack is queued for delivery, so the
+          // client never sees a reset connection instead of its response.
+          if (req.cmd === 'stop') resolveStop();
+        })
+        .catch((err) => conn.end(JSON.stringify({ ok: false, error: err?.message || String(err) }) + '\n'));
+    });
+    conn.on('error', () => {}); // client disconnected mid-write; nothing to do
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(paths.controlSock, resolve);
+  });
+
   log(`  ✓ startup checks passed · navigated ${page.url()}` + (storageState ? ` · storage state loaded (${storageState})` : ''));
   process.stdout.write(`READY ${dir}\n`);
-  // Stay alive until `stop` writes the STOP file (keeps the browser persistent).
-  await new Promise((resolve) => {
-    const t = setInterval(() => { if (fs.existsSync(paths.stopFile)) { clearInterval(t); resolve(); } }, 500);
-  });
+
+  // Stay alive until `stop` is requested — normally over the socket above,
+  // or (if the socket is unreachable) via the STOP-file fallback `cmdStop`
+  // writes when it can't connect.
+  const stopFilePoll = setInterval(() => {
+    if (fs.existsSync(paths.stopFile)) resolveStop();
+  }, 500);
+  await stopped;
+  clearInterval(stopFilePoll);
+  await new Promise((resolve) => server.close(resolve));
+  fs.rmSync(paths.controlSock, { force: true });
   await pendingCensus; // let any in-flight census finish before the page/browser goes away
   await browser.close();
   log('session stopped');
 }
 
 async function cmdObserve(args) {
-  const { browser, cdp, page, session } = await connectSession(args._[1]);
-  const focused = await captureFocused(cdp, page);
-  const obs = {
-    index: session.index,
-    note: 'current state (no keystroke sent)',
-    url: focused.url ?? session.startUrl,
-    focused: {
-      selector: focused.selector, tag: focused.tag ?? null,
-      name: focused.ax?.name ?? null, role: focused.ax?.role ?? null, states: focused.ax?.states ?? null,
-    },
-  };
-  if (needsScreenReader(session.persona || 'all')) {
-    obs.sr_last_spoken_phrase = await page
-      .evaluate(() => window.__vsr?.virtual?.lastSpokenPhrase())
-      .catch(() => null);
-  }
-  await browser.close();
+  const obs = await sendControlRequest(args._[1], { cmd: 'observe' });
   process.stdout.write(JSON.stringify(obs, null, 2) + '\n');
 }
 
 async function cmdStep(args) {
-  const { paths, session, browser, ctx, page, cdp } = await connectSession(args._[1]);
-  const steps = readJson(paths.stepsJson);
-  const index = session.index + 1;
-
-  let keystroke, activating = false;
+  const dir = args._[1];
+  let reqBody;
   if (args.type != null) {
-    await page.keyboard.type(args.type);
-    keystroke = 'type:' + JSON.stringify(args.type.slice(0, 60));
+    reqBody = { cmd: 'step', type: args.type };
   } else {
     const key = args.press || 'Tab';
-    if (!ALLOWED_KEYS.has(key)) { log(`Disallowed key: ${key}`); await browser.close(); process.exit(1); }
-    await page.keyboard.press(key === 'Space' ? ' ' : key);
-    keystroke = key;
-    activating = key === 'Enter' || key === 'Space';
+    if (!ALLOWED_KEYS.has(key)) { log(`Disallowed key: ${key}`); process.exit(1); }
+    reqBody = { cmd: 'step', press: key };
   }
-  await page.waitForTimeout(activating ? 250 : 40);
-  if (activating) await page.waitForLoadState('domcontentloaded', { timeout: 2000 }).catch(() => {});
-
-  // If this keystroke landed on a page that has a CAPTCHA, apply page-scoped
-  // compatibility once so the CAPTCHA can run (and be tested) — human-approved.
-  let captchaCompatApplied = false;
-  if (!session.captchaCompat && activating) {
-    captchaCompatApplied = await ensureCaptchaCompat(ctx, page);
-    if (captchaCompatApplied) log(`  ⚠ CAPTCHA detected at ${page.url()} — navigator.webdriver suppressed for this page (human-approved)`);
-  }
-
-  const persona = session.persona || 'all';
-  const focused = await captureFocused(cdp, page);
-  const prev = steps[steps.length - 1];
-
-  let shotRel = null;
-  if (needsKeyboardChecks(persona)) {
-    const framePng = PNG.sync.read(await page.screenshot());
-    fs.writeFileSync(path.join(paths.framesDir, `full_${pad(index)}.png`), PNG.sync.write(framePng));
-    if (focused.bbox && focused.bbox.width >= 1 && focused.bbox.height >= 1) {
-      fs.writeFileSync(path.join(paths.screenshotsDir, `${stepId(index)}.png`), PNG.sync.write(cropPng(framePng, inflate(focused.bbox))));
-      shotRel = path.join('screenshots', `${stepId(index)}.png`);
-    }
-  }
-
-  let srAnnouncement = null;
-  let srLogLength = session.srLogLength || 0;
-  if (needsScreenReader(persona)) {
-    const sr = await captureScreenReader(page, srLogLength);
-    if (sr) {
-      srLogLength = sr.log_length;
-      srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
-    }
-  }
-
-  const step = {
-    step_id: stepId(index), index, keystroke_sent: keystroke,
-    active_element_selector: focused.selector, tag: focused.tag ?? null, tabindex: focused.tabindex ?? null,
-    dom_order_index: focused.domOrderIndex ?? -1,
-    ax_name_role_state: focused.ax ? { name: focused.ax.name, role: focused.ax.role, states: focused.ax.states } : null,
-    focus_moved: !prev || prev.active_element_selector !== focused.selector,
-    bounding_box: focused.bbox ?? null, ancestor_boxes: focused.ancestorBoxes ?? [],
-    url: focused.url ?? session.startUrl,
-    text: focused.text ?? '', is_body: !!focused.isBody,
-    computed_focus_style: focused.focusStyle ?? null, region: focused.region ?? null,
-    focused_region_screenshot: shotRel, focus_visible: null,
-    sr_announcement: srAnnouncement,
-  };
-  steps.push(step);
-  writeJson(paths.stepsJson, steps);
-  writeJson(paths.sessionJson, { ...session, index, captchaCompat: session.captchaCompat || captchaCompatApplied, srLogLength });
-  await browser.close(); // disconnect only; the served browser stays alive
-  const obs = observationOf(step);
-  if (captchaCompatApplied) obs.captcha_compat_applied = true;
+  const obs = await sendControlRequest(dir, reqBody);
   process.stdout.write(JSON.stringify(obs, null, 2) + '\n');
 }
 
 async function cmdFinish(args) {
-  const dir = args._[1];
-  const paths = sessionPaths(dir);
-  if (!fs.existsSync(paths.sessionJson)) { log(`No session at ${dir}`); process.exit(1); }
-  const session = readJson(paths.sessionJson);
-  const steps = readJson(paths.stepsJson);
-  const persona = session.persona || 'all';
-
-  if (needsKeyboardChecks(persona)) {
-    const restPng = PNG.sync.read(fs.readFileSync(paths.restPng));
-    const fullFrames = steps.map((s) => PNG.sync.read(fs.readFileSync(path.join(paths.framesDir, `full_${pad(s.index)}.png`))));
-    finalizeFocusVisible(steps, fullFrames, restPng);
-  }
-
-  let census = null;
-  if (needsScreenReader(persona)) {
-    census = fs.existsSync(paths.srCensusJson) ? readJson(paths.srCensusJson) : {};
-    // The long-lived `serve` process's page.on('load') census write may not have
-    // completed for the most recent navigation by the time this separate `finish`
-    // process runs — guarantee at least the current page's census exists.
-    const { browser, page } = await connectSession(dir);
-    try {
-      const currentUrl = page.url();
-      if (!census[currentUrl]) {
-        census[currentUrl] = { captured_at: new Date().toISOString(), ...(await runCensusWithTimeout(page)) };
-        writeJson(paths.srCensusJson, census);
-      }
-    } finally {
-      await browser.close();
-    }
-  }
-
-  const findings = deriveAllFindings(
-    { steps, startUrl: session.startUrl, contextChangeOnFocus: null, census },
-    { viewport: session.viewport, goalId: session.goalId, persona }
-  );
-
-  const trace = {
-    test_case_id: session.caseId, viewport: session.viewport, mode: 'driven-live',
-    personas: persona === 'all' ? ['keyboard', 'screen-reader'] : [persona],
-    viewport_size: session.viewport_size, start_url: session.startUrl,
-    goals: session.goals, steps,
-  };
-  writeJson(path.join(dir, 'trace.json'), trace);
-  writeJson(path.join(dir, 'deterministic-findings.json'),
-    { test_case_id: session.caseId, viewport: session.viewport, mode: 'driven-live', findings });
-  if (needsScreenReader(persona)) {
-    writeJson(path.join(dir, 'screen-reader-census.json'),
-      { test_case_id: session.caseId, viewport: session.viewport, mode: 'driven-live', pages: census });
-  }
-  log(`finished: ${steps.length} steps, ${findings.length} deterministic finding(s) → ${dir}`);
-  process.stdout.write(JSON.stringify({ steps: steps.length, findings }, null, 2) + '\n');
+  const result = await sendControlRequest(args._[1], { cmd: 'finish' });
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
 async function cmdStop(args) {
   const paths = sessionPaths(args._[1]);
-  fs.writeFileSync(paths.stopFile, '1');
+  try {
+    await socketRequest(paths, { cmd: 'stop' });
+  } catch {
+    fs.writeFileSync(paths.stopFile, '1');
+  }
   log('stop requested');
 }
 
@@ -2176,12 +2326,17 @@ async function main() {
       }
     }
 
-    const summary = [];
+    // Each viewport gets its own isolated context/page/CDP session (see
+    // runViewport), so independent viewports can be crawled concurrently
+    // instead of one-at-a-time — Promise.all preserves the `viewports` order
+    // in `results` regardless of which finishes first.
+    const results = await Promise.all(
+      viewports.map((vp) => runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState, persona }))
+    );
+    const summary = results.map((r) => ({ viewport: r.viewport, steps: r.steps, findings: r.findings }));
     const censusByViewport = {};
-    for (const vp of viewports) {
-      const r = await runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState, persona });
-      summary.push({ viewport: r.viewport, steps: r.steps, findings: r.findings });
-      if (needsScreenReader(persona)) censusByViewport[vp.name] = r.census;
+    if (needsScreenReader(persona)) {
+      for (let i = 0; i < viewports.length; i++) censusByViewport[viewports[i].name] = results[i].census;
     }
 
     fs.writeFileSync(
