@@ -12,10 +12,6 @@
 // The AI-judgment layer (the `ai:` checks) is out of scope for the runner: the
 // invoking agent reads the trace and writes those findings.
 
-import { chromium } from 'playwright';
-import { parse as parseYaml } from 'yaml';
-import { PNG } from 'pngjs';
-import pixelmatch from 'pixelmatch';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,6 +21,30 @@ import { validatePersona, resolveStorageState, makeFinding, parseArgs, pickViewp
 import { relLum } from './lib/color.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// `playwright`/`yaml`/`pngjs`/`pixelmatch` are only needed by `serve` and the
+// batch crawl (`main()`'s non-subcommand branch) -- `observe`/`step`/`finish`/
+// `stop` are spawned as a fresh Node process PER KEYSTROKE and only ever talk
+// to control.sock (see sendControlRequest/socketRequest below), so importing
+// these eagerly at module scope made every single keystroke pay ~250ms of
+// Node loading Playwright's module graph just to forward one JSON line over a
+// socket. Deferred to dynamic import(), called once via loadHeavyDeps() at
+// the top of cmdServe() and the batch branch of main() -- the only two entry
+// points that actually construct a browser or touch PNG/pixelmatch/YAML.
+let chromium, parseYaml, PNG, pixelmatch;
+async function loadHeavyDeps() {
+  if (chromium) return; // already loaded (idempotent, no-op on repeat calls)
+  const [pw, yamlMod, pngMod, pixelmatchMod] = await Promise.all([
+    import('playwright'),
+    import('yaml'),
+    import('pngjs'),
+    import('pixelmatch'),
+  ]);
+  chromium = pw.chromium;
+  parseYaml = yamlMod.parse;
+  PNG = pngMod.PNG;
+  pixelmatch = pixelmatchMod.default;
+}
 
 // Default output root: a per-user temp directory, so the tool never writes into
 // the project/skill directory. Override with --out.
@@ -264,15 +284,20 @@ async function activeElementObjectId(cdp) {
 }
 
 // Ground-truth accessible name / role / states from the accessibility tree.
-async function axForBackendNode(cdp, backendNodeId) {
+// Takes either { objectId } or { backendNodeId } -- getPartialAXTree accepts
+// a live Runtime.RemoteObjectId directly, so callers that already hold an
+// objectId (e.g. captureFocused) can skip the DOM.describeNode round trip
+// that used to be needed purely to translate objectId -> backendNodeId.
+async function axForNode(cdp, params) {
   try {
     const { nodes } = await cdp.send('Accessibility.getPartialAXTree', {
-      backendNodeId,
+      ...params,
       fetchRelatives: false,
     });
     if (!nodes || !nodes.length) return null;
     // The requested node is the last in the returned partial tree.
-    const node = nodes.find((n) => n.backendDOMNodeId === backendNodeId) || nodes[nodes.length - 1];
+    const node = ('backendNodeId' in params && nodes.find((n) => n.backendDOMNodeId === params.backendNodeId))
+      || nodes[nodes.length - 1];
     const states = {};
     for (const p of node.properties || []) {
       states[p.name] = p.value && 'value' in p.value ? p.value.value : p.value;
@@ -364,15 +389,7 @@ async function captureFocused(cdp, page) {
       return { isBody: false, selector: '(unknown)', bbox: null, domOrderIndex: -1 };
     }
   };
-  const collectAx = async () => {
-    try {
-      const { node } = await cdp.send('DOM.describeNode', { objectId });
-      if (node && node.backendNodeId) return await axForBackendNode(cdp, node.backendNodeId);
-    } catch {
-      /* AX best-effort */
-    }
-    return null;
-  };
+  const collectAx = () => axForNode(cdp, { objectId }); // best-effort: resolves to null internally on failure
   let [geom, ax] = await Promise.all([collectGeom(), collectAx()]);
   await cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
 
@@ -1558,6 +1575,44 @@ const DETERMINISM_CSS = `
   caret-color: transparent !important;
 }`;
 
+// Same selector waitForReady's readiness check cares about (see below) --
+// kept as one literal so the MutationObserver logic and the selector it's
+// standing in for can't silently drift apart.
+const FOCUSABLE_SELECTOR =
+  'a[href],button,input:not([type=hidden]),select,textarea,[tabindex],summary,[contenteditable]';
+const FOCUSABLE_ATTRS = ['href', 'type', 'tabindex', 'contenteditable'];
+
+// Injected at document start (before any of the page's own scripts run) so it
+// captures every DOM change from the very first paint, not just ones that
+// happen after waitForReady() is called. Stamps window.__lastRelevantMutation
+// on any change that could plausibly move waitForReady's focusable-element
+// count. Deliberately NOT "any mutation at all" -- childList mutations are
+// filtered in the callback to only the added/removed nodes that themselves
+// match FOCUSABLE_SELECTOR or contain a descendant that does (native
+// MutationObserver has no selector-based childList filter, only
+// attributeFilter for attribute changes) -- otherwise ANY background DOM
+// churn unrelated to focusable content (a live ticker, a chat widget
+// appending messages, an ad slot refreshing) would reset the quiet window
+// forever and this would never resolve before maxWaitMs. That's not a
+// hypothetical: unscoped childList tracking measured 8000ms (full timeout)
+// against a 2-static-button page with an unrelated background node churn,
+// versus 613ms for the old count-based check on the same page.
+const DOM_QUIET_TRACKER_JS = `(() => {
+  window.__lastRelevantMutation = Date.now();
+  const SELECTOR = ${JSON.stringify(FOCUSABLE_SELECTOR)};
+  const isRelevant = (node) =>
+    node.nodeType === 1 && ((node.matches && node.matches(SELECTOR)) || (node.querySelector && node.querySelector(SELECTOR)));
+  new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === 'attributes') { window.__lastRelevantMutation = Date.now(); continue; }
+      let relevant = false;
+      for (const n of r.addedNodes) { if (isRelevant(n)) { relevant = true; break; } }
+      if (!relevant) for (const n of r.removedNodes) { if (isRelevant(n)) { relevant = true; break; } }
+      if (relevant) window.__lastRelevantMutation = Date.now();
+    }
+  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ${JSON.stringify(FOCUSABLE_ATTRS)} });
+})();`;
+
 async function makeContext(browser, viewport, disableAnimations, storageState, persona = 'all') {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
@@ -1581,6 +1636,7 @@ async function makeContext(browser, viewport, disableAnimations, storageState, p
   if (needsScreenReader(persona)) {
     await context.addInitScript({ content: loadVsrIife() });
   }
+  await context.addInitScript({ content: DOM_QUIET_TRACKER_JS });
   return context;
 }
 
@@ -1623,25 +1679,22 @@ async function verifyFocusVisibleModality(context) {
 
 // Wait for the page to reach a stable state before testing. Testing too early
 // (at domcontentloaded) on a hydrating SPA captures a half-built DOM. There is
-// no perfect "fully loaded" signal on sites with continuous network chatter, so
-// we combine a best-effort network-settle with DOM stability: keep sampling the
-// focusable-element count until it stops changing (hydration/lazy content done).
+// no perfect "fully loaded" signal on sites with continuous network chatter --
+// a strict networkidle wait never resolves on a page with ordinary background
+// traffic (analytics beacons, websocket keepalives) even once its DOM is long
+// since settled, and burns its full timeout every time. So this waits on DOM
+// stability alone: window.__lastRelevantMutation (maintained continuously
+// from navigation start by DOM_QUIET_TRACKER_JS, see makeContext) going quiet
+// for `quietMs` is the same "stopped changing" signal a count-polling loop
+// would approximate, just detected the instant it's true instead of on a
+// blind fixed tick -- so multi-burst hydration is caught right after its last
+// real mutation instead of accumulating discretization slop per burst.
 async function waitForReady(page, { quietMs = 600, maxWaitMs = 8000 } = {}) {
-  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-  const countFocusable = () =>
-    page.evaluate(() =>
-      document.querySelectorAll(
-        'a[href],button,input:not([type=hidden]),select,textarea,[tabindex],summary,[contenteditable]'
-      ).length
-    );
-  const start = Date.now();
-  let prev = await countFocusable();
-  while (Date.now() - start < maxWaitMs) {
-    await page.waitForTimeout(quietMs);
-    const now = await countFocusable();
-    if (now === prev) break; // DOM settled
-    prev = now;
-  }
+  await page.waitForFunction(
+    (quiet) => Date.now() - (window.__lastRelevantMutation || 0) >= quiet,
+    quietMs,
+    { timeout: maxWaitMs }
+  ).catch(() => {}); // best-effort: proceed with whatever the DOM is after maxWaitMs
 }
 
 // CAPTCHA compatibility (human-approved, page-scoped). CAPTCHAs (reCAPTCHA,
@@ -2038,6 +2091,7 @@ async function handleFinish(state) {
 }
 
 async function cmdServe(args) {
+  await loadHeavyDeps();
   let persona;
   try {
     persona = validatePersona(args.persona || 'all');
@@ -2272,6 +2326,7 @@ async function main() {
     process.stdout.write(USAGE);
     process.exit(args.help ? 0 : 1);
   }
+  await loadHeavyDeps();
 
   let persona;
   try {
