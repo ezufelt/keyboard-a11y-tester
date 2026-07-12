@@ -72,7 +72,8 @@ the short table in `README.md`, the full-detail table in `docs/interface.md` (th
 authoritative version), and the persona summary in `SKILL.md`. Also add an entry under
 `[Unreleased]` in `CHANGELOG.md`.
 
-CI runs `setup-check.mjs`, the linter, and this suite on every PR (`.github/workflows/test.yml`).
+CI runs `setup-check.mjs`, the linter, and this suite on every PR, across Ubuntu, macOS, and
+Windows (`.github/workflows/test.yml`).
 
 ## Design constraints to respect
 

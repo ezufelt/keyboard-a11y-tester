@@ -1834,6 +1834,16 @@ const CHROMIUM_ARGS = [
 // decides the next keystroke — the control loop lives in the agent, not here.
 // ---------------------------------------------------------------------------
 
+// Windows named pipes live in a flat, virtual `\\.\pipe\` namespace, not the
+// real filesystem -- binding an AF_UNIX-style socket file under a Temp
+// directory is unreliable there (EACCES on GitHub Actions' windows-latest
+// runners). Derive a unique pipe name from `dir` instead; on other platforms
+// a plain socket file under `dir` works fine.
+function controlSockPath(dir) {
+  if (process.platform === 'win32') return '\\\\.\\pipe\\' + dir.replace(/[:\\]/g, '_');
+  return path.join(dir, 'control.sock');
+}
+
 function sessionPaths(dir) {
   return {
     dir,
@@ -1841,7 +1851,7 @@ function sessionPaths(dir) {
     stepsJson: path.join(dir, 'steps.json'),
     screenshotsDir: path.join(dir, 'screenshots'),
     stopFile: path.join(dir, 'STOP'),
-    controlSock: path.join(dir, 'control.sock'),
+    controlSock: controlSockPath(dir),
     srCensusJson: path.join(dir, 'sr-census.json'),
   };
 }
