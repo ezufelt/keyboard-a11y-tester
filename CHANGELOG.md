@@ -29,6 +29,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sequentially: `captureFocused`'s geometry collection and AX lookup, and (in both the batch
   crawl's `recordStep` and the live session's step handler) the focus capture, full-page
   screenshot, and screen-reader capture.
+- Net effect measured against a real site (not the local test fixtures, which are too small/local
+  to show it): ~15-20% faster overall. A full desktop+mobile+keyboard+screen-reader batch crawl
+  dropped from ~25s to ~21s, and a live `serve`/`step` session dropped from ~500ms to ~395ms per
+  keystroke. Gains scale with page size and session length, so they're larger on real sites than
+  on the short fixture pages `npm test` runs against.
 
 ## [0.6.0] - 2026-07-11
 
