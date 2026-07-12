@@ -8,32 +8,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
-- Live sessions (`serve`/`observe`/`step`/`finish`/`stop`): `serve` now holds one persistent
-  `page`/CDP session and in-memory session state (steps, screen-reader log position, census,
-  CAPTCHA-compat flag, full-page frames) for the whole session, exposed over a Unix-domain
-  control socket (`control.sock`). `observe`/`step`/`finish`/`stop` are now thin socket clients
-  instead of each opening its own `chromium.connectOverCDP()` handshake plus a fresh CDP session
-  (`DOM.enable`/`Accessibility.enable`) on every single keystroke. `connectSession()` is removed.
-  Measured ~9% faster per `step` call; the rest of per-step latency is Node process cold-start
-  and the full-page screenshot capture, both inherent to the one-CLI-call-per-keystroke model.
-  The stdout/on-disk contract (`session.json`, `steps.json`, `screenshots/step_NNNN.png`,
-  `trace.json`, etc.) is unchanged — no test or doc changes needed for this part.
-- Live sessions no longer round-trip full-page screenshots through disk. `frames/full_NNNN.png`
-  and `frames/rest.png` are now kept in the `serve` process's memory and fed directly to the
-  focus-visible/appearance computation in `finish`, instead of being written per step and read
-  back at the end. The cropped `screenshots/step_NNNN.png` (the one artifact the invoking agent
-  actually reads) is unaffected. `docs/interface.md`'s directory layout updated to match.
-- Batch mode: viewports (e.g. desktop + mobile) now crawl concurrently instead of sequentially in
-  `main()`, since each already gets its own isolated context/page/CDP session.
-- Per-step capture now runs independent reads of "current page state" concurrently instead of
-  sequentially: `captureFocused`'s geometry collection and AX lookup, and (in both the batch
-  crawl's `recordStep` and the live session's step handler) the focus capture, full-page
-  screenshot, and screen-reader capture.
-- Net effect measured against a real site (not the local test fixtures, which are too small/local
-  to show it): ~15-20% faster overall. A full desktop+mobile+keyboard+screen-reader batch crawl
-  dropped from ~25s to ~21s, and a live `serve`/`step` session dropped from ~500ms to ~395ms per
-  keystroke. Gains scale with page size and session length, so they're larger on real sites than
-  on the short fixture pages `npm test` runs against.
+- Performance: a persistent `serve` process now holds the browser/CDP session and in-memory
+  session state for the whole live session behind a Unix-domain control socket, instead of each
+  `observe`/`step`/`finish`/`stop` reconnecting to Chromium from scratch; full-page frames stay in
+  memory instead of round-tripping through disk; batch-mode viewports and per-step page-state reads
+  (focus capture, screenshot, screen-reader capture) run concurrently instead of sequentially;
+  `observe`/`step`/`finish`/`stop` no longer pay Node's cost of loading Playwright/pngjs/pixelmatch/
+  yaml just to forward one request over the socket; the accessible-name lookup skips a redundant CDP
+  round trip; and page-readiness detection (`waitForReady`) reacts to actual DOM mutations instead
+  of blind fixed-interval polling gated behind a strict network-idle wait. Net effect measured
+  against a real site (desktop, keyboard+screen-reader): a realistic 40-keystroke session (apply a
+  filter, load more, visit an article, back, visit again, back) dropped from ~55s to ~44s end-to-end
+  (~19% faster), averaging ~756ms/keystroke versus ~983ms before (~23% faster). The local fixture
+  suite (`npm test`) doesn't move on these changes — its pages are too small/static to exercise
+  them — so gains are real-site-only; see `test/perf.spec.js` for fixtures that do exercise them.
 
 ## [0.6.0] - 2026-07-11
 
