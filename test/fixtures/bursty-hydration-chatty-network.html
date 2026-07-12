@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: bursty hydration + chatty background network (waitForReady perf)</title>
+<style>
+  button:focus { outline: 3px solid #06c; }
+</style>
+</head>
+<body>
+  <main id="main">
+    <h1>Bursty hydration fixture</h1>
+    <div id="root"></div>
+  </main>
+  <script>
+    // Simulates a real SPA's staged hydration: a few controls mount in quick
+    // succession, then the DOM never changes again after ~600ms.
+    function addButton(n) {
+      var b = document.createElement('button');
+      b.id = 'late-btn-' + n;
+      b.textContent = 'Loaded ' + n;
+      document.getElementById('root').appendChild(b);
+    }
+    addButton(0);
+    setTimeout(function () { addButton(1); }, 200);
+    setTimeout(function () { addButton(2); }, 400);
+    setTimeout(function () { addButton(3); }, 600); // last real DOM mutation
+
+    // Simulates a real site's background chatter (analytics beacon, chat
+    // widget poll, websocket keepalive) that keeps the network from ever
+    // going idle -- deliberately outlives the DOM settling above, so a
+    // waitForReady implementation that blocks on strict network-idle before
+    // ever checking DOM stability pays a large, unrelated tax here.
+    setInterval(function () {
+      fetch('/ping?' + Date.now()).catch(function () {});
+    }, 300);
+  </script>
+</body>
+</html>

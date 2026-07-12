@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: unrelated background DOM churn (waitForReady perf)</title>
+<style>
+  button:focus { outline: 3px solid #06c; }
+</style>
+</head>
+<body>
+  <main id="main">
+    <h1>Background churn fixture</h1>
+    <button id="a">A</button>
+    <button id="b">B</button>
+    <div id="ticker" aria-hidden="true"></div>
+  </main>
+  <script>
+    // The set of focusable controls above never changes after first paint --
+    // but this simulates a live ticker / chat widget / ad slot continuously
+    // inserting and removing NON-focusable nodes forever. A readiness check
+    // that resets its quiet window on any DOM insertion/removal at all
+    // (rather than only ones that could move the focusable-element count)
+    // would never see this page as "ready".
+    setInterval(function () {
+      var s = document.createElement('span');
+      s.textContent = String(Date.now());
+      document.getElementById('ticker').appendChild(s);
+      setTimeout(function () { s.remove(); }, 50);
+    }, 200);
+  </script>
+</body>
+</html>
