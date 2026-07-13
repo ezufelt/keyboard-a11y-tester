@@ -191,7 +191,8 @@ export async function runBatchAllViewports({ url, persona = 'all', outDir, maxSt
 // browser stays alive (and the process keeps running) until `stop` is called.
 export function startServe({ url, persona = 'all', viewport = 'desktop', port, outDir, storageState }) {
   return new Promise((resolve, reject) => {
-    const args = [RUNNER, 'serve', '--url', url, '--viewport', viewport, '--persona', persona, '--port', String(port), '--out', outDir];
+    const args = [RUNNER, 'serve', '--url', url, '--viewport', viewport, '--persona', persona, '--out', outDir];
+    if (port != null) args.push('--port', String(port));
     if (storageState) args.push('--storage-state', storageState);
     const proc = spawn('node', args, { cwd: REPO_ROOT });
     let out = '';
