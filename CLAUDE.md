@@ -87,7 +87,17 @@ local HTTP because Chromium rejects storageState localStorage injection for `fil
 Test files in `test/`: `contract.spec.js` (output shape contract), `defects.spec.js` (seeded-defect
 fixtures assert expected findings, plus a false-positive guard via `clean.html`),
 `persona-parity.spec.js`, `cross-viewport.spec.js`, `live-session.spec.js` (`serve`/`observe`/
-`step`/`finish`/`stop` round trip), `storage-state.spec.js` (auth seeding).
+`step`/`finish`/`stop` round trip), `storage-state.spec.js` (auth seeding),
+`security.spec.js` (local-hardening regressions: secret-field redaction in the trace/steps, opt-in
+CDP debug port, `0700` output dirs, path-traversal sanitization — asserted on the runner's on-disk
+output, using the `secret-field.html` fixture).
+
+**Prove a bug-fix or security test red-green before committing it.** These are black-box output
+assertions, so a test that never actually exercises the defect passes vacuously. For any regression
+or hardening fix, confirm the new test *fails* against the pre-fix runner
+(`git checkout <parent> -- scripts/runner.mjs`, run the spec, then `git checkout HEAD -- scripts/runner.mjs`)
+and *passes* against the fix. A green-only test is not evidence the guard has teeth — watch it go red
+for the expected reason first.
 
 `test/property.spec.js` is the one exception to the black-box-subprocess pattern above: it
 imports the pure functions in `scripts/lib/` directly and fuzzes them with `fast-check`
