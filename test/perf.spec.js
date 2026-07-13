@@ -31,8 +31,14 @@ test.describe('page-readiness performance', () => {
       // The page's DOM was fully settled well under a second in; readiness
       // detection should track that, not the unrelated background network
       // chatter (which alone costs a full 5s under the current strict
-      // networkidle-gated implementation).
-      expect(elapsed).toBeLessThan(5000);
+      // networkidle-gated implementation). The threshold is 7000ms rather
+      // than something tighter because GitHub Actions' macos-26 runners pay
+      // consistently higher Node/Chromium launch overhead than
+      // ubuntu-latest/windows-latest (observed ~5.3-6.4s here vs ~2-5s on
+      // the other two even when readiness detection is working correctly) --
+      // a genuine "never settles" regression still lands far past this, since
+      // it burns the full 8s maxWaitMs on top of that overhead.
+      expect(elapsed).toBeLessThan(7000);
     } finally {
       await fixture.close();
       fs.rmSync(outDir, { recursive: true, force: true });
@@ -62,8 +68,9 @@ test.describe('page-readiness performance', () => {
 
       // maxWaitMs (8s) plus ordinary Chromium/crawl overhead would put a
       // false "never settles" run comfortably over 8s; a correct
-      // implementation should resolve in the low seconds.
-      expect(elapsed).toBeLessThan(5000);
+      // implementation should resolve in the low seconds. See the threshold
+      // comment in the test above for why this is 7000ms rather than 5000ms.
+      expect(elapsed).toBeLessThan(7000);
     } finally {
       await fixture.close();
       fs.rmSync(outDir, { recursive: true, force: true });

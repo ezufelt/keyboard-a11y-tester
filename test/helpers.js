@@ -9,7 +9,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import http from 'node:http';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execFileP = promisify(execFile);
 
@@ -19,7 +19,12 @@ export const RUNNER = path.join(REPO_ROOT, 'scripts', 'runner.mjs');
 const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 
 export function fixtureUrl(name) {
-  return 'file://' + path.join(FIXTURES_DIR, name);
+  // pathToFileURL() yields a spec-correct file URL with forward slashes and
+  // percent-encoding on every platform. Plain string concatenation would emit
+  // backslashes on Windows (e.g. file://D:\a\...), which is both a malformed
+  // URL and, when embedded in a double-quoted YAML scalar, an invalid escape
+  // sequence that aborts the runner before it parses the test case.
+  return pathToFileURL(path.join(FIXTURES_DIR, name)).href;
 }
 
 // storageState's localStorage injection needs a real HTTP(S) origin — Chromium

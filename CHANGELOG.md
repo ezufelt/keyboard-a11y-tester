@@ -8,6 +8,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- CI (`.github/workflows/test.yml`) now runs the suite on a `ubuntu-latest` / `macos-26` /
+  `windows-latest` matrix (`fail-fast: false`) instead of Ubuntu only.
 - Performance: a persistent `serve` process now holds the browser/CDP session and in-memory
   session state for the whole live session behind a Unix-domain control socket, instead of each
   `observe`/`step`/`finish`/`stop` reconnecting to Chromium from scratch; full-page frames stay in
@@ -22,6 +24,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (~19% faster), averaging ~756ms/keystroke versus ~983ms before (~23% faster). The local fixture
   suite (`npm test`) doesn't move on these changes — its pages are too small/static to exercise
   them — so gains are real-site-only; see `test/perf.spec.js` for fixtures that do exercise them.
+
+### Fixed
+- `serve`'s control socket (`control.sock`) failed to start on Windows CI
+  (`EACCES: permission denied ...control.sock`), failing `live-session.spec.js` and
+  `storage-state.spec.js`'s serve-mode tests on every run: Node on Windows binds a plain
+  filesystem path via AF_UNIX, which is unreliable under `windows-latest`'s Temp directory.
+  `sessionPaths()` now derives a `\\.\pipe\<dir>`-style named pipe path on `win32` instead of a
+  socket file under the session directory; other platforms are unchanged.
+- `test/defects.spec.js`'s `clean.html` false-positive guard asserted zero findings of any
+  kind, so it flaked on `macos-26` vs `ubuntu-latest`/SwiftShader differences in the AAA-only
+  focus-appearance *area* measurement — a platform-rendering variance that only affects the
+  informative 2.4.13 sub-check, never AA pass/fail. The guard now asserts zero **AA** findings
+  and separately asserts the skip-link's measured contrast stays ≥ 3:1 (the real
+  contrast-corruption regression this test exists to catch).
+- `test/perf.spec.js`'s two page-readiness timing assertions used a 5000ms budget, which failed
+  consistently on `macos-26` CI (observed 5.3-6.4s) even though `waitForReady` was behaving
+  correctly — GitHub Actions' macOS runners pay higher Node/Chromium launch overhead than
+  `ubuntu-latest`/`windows-latest` (observed ~2-3s and ~3.5-4.6s respectively for the same runs).
+  Budget raised to 7000ms, still far below the ~9s+ a genuine "never settles" regression would
+  take (it burns the full 8s `maxWaitMs` on top of launch overhead).
 
 ## [0.6.0] - 2026-07-11
 
