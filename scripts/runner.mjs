@@ -101,7 +101,17 @@ Live agentic session (the agent observes and decides each keystroke):
 
 const pad = (n) => String(n).padStart(4, '0');
 const stepId = (n) => `step_${pad(n)}`;
-const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
+// 0o700: the output tree holds traces, screenshots and the live-session control
+// socket for a possibly-authenticated run, under a world-readable temp dir.
+// Owner-only dirs stop other local users traversing in to drive or read it.
+const ensureDir = (d) => fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+
+// A single output-path segment must never contain path separators or "..":
+// testCase.id and viewport.name come from operator-supplied YAML and are joined
+// into the output tree, so a value like "../../foo" would escape it. Collapse
+// anything outside [a-z0-9] to hyphens (same rule synthCase already uses for
+// the --url host), falling back to a placeholder so an empty result is safe.
+const safeSeg = (s) => String(s ?? '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'x';
 
 function log(...m) {
   process.stderr.write(m.join(' ') + '\n');
@@ -243,6 +253,17 @@ function (el) {
     var ROLE_MAP = { a: el.hasAttribute('href') ? 'link' : 'generic', button: 'button', select: 'listbox', textarea: 'textbox', img: 'img' };
     heuristicRole = ROLE_MAP[el.tagName.toLowerCase()] || (el.tagName.toLowerCase() === 'input' ? (el.getAttribute('type') || 'text') : el.tagName.toLowerCase());
   }
+  // Never let a secret field's plaintext value reach the trace on disk: the
+  // captured text (and everything downstream) is persisted to steps.json /
+  // trace.json in a world-readable temp dir. Passwords, OTPs and card numbers
+  // are identified by input type or autocomplete token and have their .value
+  // suppressed (label/aria-label still describe the control fine).
+  var acToken = (el.getAttribute('autocomplete') || '').toLowerCase();
+  var isSecretField = el.tagName.toLowerCase() === 'input' &&
+    (((el.getAttribute('type') || '').toLowerCase() === 'password') ||
+     acToken.indexOf('password') !== -1 ||
+     acToken.indexOf('one-time-code') !== -1 ||
+     acToken.indexOf('cc-') !== -1);
   return {
     isBody: false,
     selector: cssPath(el),
@@ -255,7 +276,8 @@ function (el) {
     heuristicRole,
     domOrderIndex,
     url: location.href,
-    text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
+    isSecretField,
+    text: (el.innerText || (isSecretField ? '' : el.value) || el.getAttribute('aria-label') || '').trim().slice(0, 120),
     hasHref: el.tagName.toLowerCase() === 'a' && !!el.getAttribute('href'),
     focusStyle,
     region
@@ -1772,7 +1794,7 @@ async function runViewport(browser, testCase, viewport, opts) {
   await waitForReady(page);
   if (needsScreenReader(persona)) await startVsr(page);
 
-  const vpDir = path.join(opts.outDir, viewport.name);
+  const vpDir = path.join(opts.outDir, safeSeg(viewport.name));
   const screenshotsDir = path.join(vpDir, 'screenshots');
   ensureDir(screenshotsDir);
 
@@ -1857,6 +1879,7 @@ function loadCase(yamlPathArg) {
   if (!fs.existsSync(yamlPath)) { log(`Test case not found: ${yamlPath}`); process.exit(1); }
   const testCase = parseYaml(fs.readFileSync(yamlPath, 'utf8'));
   if (!testCase?.target?.start_url) { log('Invalid test case: missing target.start_url'); process.exit(1); }
+  testCase.id = safeSeg(testCase.id);
   return testCase;
 }
 
@@ -2022,6 +2045,12 @@ async function handleStep(state, req) {
     srAnnouncement = { new_phrases: sr.new_phrases, live_announcements: sr.live_announcements, focus_announcement: sr.focus_announcement };
   }
 
+  // Mirror captureFocused's secret-field suppression for the typed text itself:
+  // record that a type happened and its length, never the literal secret.
+  if (req.type != null && focused.isSecretField) {
+    keystroke = `type:[redacted ${req.type.length} chars]`;
+  }
+
   const step = {
     step_id: stepId(index), index, keystroke_sent: keystroke,
     active_element_selector: focused.selector, tag: focused.tag ?? null, tabindex: focused.tabindex ?? null,
@@ -2107,10 +2136,13 @@ async function cmdServe(args) {
     log(err.message);
     process.exit(1);
   }
-  // Kept for backward compatibility (docs/interface.md) and standalone
-  // devtools/CDP debugging of a live session -- no longer used by this file's
-  // own observe/step/finish/stop, which talk to `paths.controlSock` instead.
-  const port = args.port || 9333;
+  // Optional standalone devtools/CDP debugging of a live session -- no longer
+  // used by this file's own observe/step/finish/stop, which talk to
+  // `paths.controlSock` instead. The remote-debugging endpoint is
+  // unauthenticated and grants full control of the (possibly authenticated)
+  // browser, so it is opened only when the operator explicitly asks for it
+  // via --port rather than always-on.
+  const port = args.port || null;
   let storageState;
   try {
     storageState = resolveStorageState(args.storageState);
@@ -2119,7 +2151,7 @@ async function cmdServe(args) {
     process.exit(1);
   }
   const outRoot = outRootFrom(args.out);
-  const dir = path.join(outRoot, testCase.id, `session-${vp.name}`);
+  const dir = path.join(outRoot, testCase.id, `session-${safeSeg(vp.name)}`);
   const paths = sessionPaths(dir);
   ensureDir(paths.screenshotsDir);
   if (fs.existsSync(paths.stopFile)) fs.rmSync(paths.stopFile);
@@ -2131,7 +2163,7 @@ async function cmdServe(args) {
 
   const browser = await chromium.launch({
     channel: 'chromium', headless: true,
-    args: [...CHROMIUM_ARGS, `--remote-debugging-port=${port}`],
+    args: port ? [...CHROMIUM_ARGS, `--remote-debugging-port=${port}`] : CHROMIUM_ARGS,
   });
   // Startup self-check — irrelevant to a screen-reader-only run (no pixel work).
   if (needsKeyboardChecks(persona)) {
@@ -2180,7 +2212,7 @@ async function cmdServe(args) {
     viewport: vp.name,
     viewport_size: { width: vp.width, height: vp.height },
     startUrl,
-    cdpUrl: `http://127.0.0.1:${port}`,
+    cdpUrl: port ? `http://127.0.0.1:${port}` : null,
     goalId,
     goals,
     captchaCompat,
