@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-13
+
 ### Changed
 - CI (`.github/workflows/test.yml`) now runs the suite on a `ubuntu-latest` / `macos-26` /
   `windows-latest` matrix (`fail-fast: false`) instead of Ubuntu only.
@@ -192,7 +194,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Saved-scenario support (`*.test.yaml`, see `test-cases/TEMPLATE.test.yaml`) alongside
   ad-hoc `--url` runs.
 
-[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.2.0...v0.5.0
 [0.2.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.1.0...v0.2.0
