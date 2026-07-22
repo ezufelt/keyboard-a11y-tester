@@ -45,6 +45,48 @@ export function serveFixtureHttp(name) {
   });
 }
 
+// Serves a CDN/WAF-style error page: a real HTML body (so navigation succeeds
+// and there is something to crawl) behind a non-2xx status. Mirrors what
+// CloudFront returns when it blocks headless Chromium -- the case where the
+// runner used to audit the error page and report fictitious findings.
+export function serveErrorStatusHttp(status = 403) {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(status, { 'content-type': 'text/html' });
+      res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ERROR: The request could not be satisfied</title></head>
+<body><h1>403 ERROR</h1><p>The request could not be satisfied. Request blocked.</p></body></html>`);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      resolve({ origin, url: origin + '/', close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
+// Serves the fixture only to requests whose User-Agent lacks the headless
+// token, and 403s otherwise -- the exact CloudFront-style gate --user-agent
+// exists to get past. Proves the flag reaches the browser's real request
+// headers, not merely that the runner accepted the argument.
+export function serveUaGatedHttp(name) {
+  const html = fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8');
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (/headless/i.test(req.headers['user-agent'] || '')) {
+        res.writeHead(403, { 'content-type': 'text/html' });
+        res.end('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ERROR</title></head><body><h1>403 ERROR</h1></body></html>');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(html);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      resolve({ origin, url: origin + '/', close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
 // Serves the outer/inner iframe fixtures on two different ports (127.0.0.1 vs
 // localhost), a genuine cross-origin boundary, so Chrome's site isolation puts
 // the iframe's content in its own out-of-process target -- the scenario the
@@ -137,6 +179,22 @@ export function tmpOutDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'katest-'));
 }
 
+// An output root deep enough that <outDir>/<case-id>/session-<viewport>/control.sock
+// would overflow the AF_UNIX sun_path limit (104 bytes on macOS, 108 on Linux).
+// Padded to a computed length rather than a fixed one so it reproduces the
+// overflow on both a macOS /var/folders TMPDIR (~49 bytes) and a Linux /tmp
+// (4 bytes) — a hardcoded pad would silently stop overflowing on the short one
+// and leave the test passing vacuously.
+// Padding goes in the mkdtemp prefix so the result is a single directory the
+// caller's rmSync fully removes, rather than a deep tree under an orphan parent.
+export function deepOutDir() {
+  const prefix = path.join(os.tmpdir(), 'katest-');
+  const tail = '/xxxxxxxxxxxx/session-desktop/control.sock'; // longest realistic session path suffix
+  const target = 120; // comfortably past both 104 (macOS) and 108 (Linux)
+  const padLen = Math.max(1, target - Buffer.byteLength(prefix) - tail.length - 6 /* mkdtemp suffix */);
+  return fs.mkdtempSync(prefix + 'p'.repeat(padLen));
+}
+
 export function randomPort() {
   return 9200 + Math.floor(Math.random() * 800);
 }
@@ -168,12 +226,35 @@ function readOutputs(outDir, viewport) {
 }
 
 // Runs the batch (blind Tab-crawl) mode to completion and returns parsed output.
-export async function runBatch({ url, persona = 'all', viewport = 'desktop', outDir, maxSteps, storageState }) {
+export async function runBatch({ url, persona = 'all', viewport = 'desktop', outDir, maxSteps, storageState, userAgent }) {
+  const args = batchArgs({ url, persona, viewport, outDir, maxSteps, storageState, userAgent });
+  const { stdout, stderr } = await execFileP('node', args, { cwd: REPO_ROOT, timeout: 55_000 });
+  return { stdout, stderr, ...readOutputs(outDir, viewport) };
+}
+
+function batchArgs({ url, persona, viewport, outDir, maxSteps, storageState, userAgent }) {
   const args = [RUNNER, '--url', url, '--viewport', viewport, '--persona', persona, '--out', outDir];
   if (maxSteps) args.push('--max-steps', String(maxSteps));
   if (storageState) args.push('--storage-state', storageState);
-  const { stdout, stderr } = await execFileP('node', args, { cwd: REPO_ROOT, timeout: 55_000 });
-  return { stdout, stderr, ...readOutputs(outDir, viewport) };
+  if (userAgent) args.push('--user-agent', userAgent);
+  return args;
+}
+
+// Like runBatch, but for runs expected to abort: returns the exit code and
+// output instead of throwing, and never tries to read result files that a
+// failed run has no reason to have written.
+export async function runBatchRaw({ url, persona = 'all', viewport = 'desktop', outDir, maxSteps, storageState, userAgent }) {
+  const args = batchArgs({ url, persona, viewport, outDir, maxSteps, storageState, userAgent });
+  // `output` is stdout+stderr combined: the runner's log() writes to stderr,
+  // so a caller asserting on stdout alone would silently miss every diagnostic.
+  try {
+    const { stdout, stderr } = await execFileP('node', args, { cwd: REPO_ROOT, timeout: 55_000 });
+    return { code: 0, stdout, stderr, output: stdout + stderr };
+  } catch (err) {
+    const stdout = err.stdout || '';
+    const stderr = err.stderr || '';
+    return { code: err.code ?? 1, stdout, stderr, output: stdout + stderr };
+  }
 }
 
 // Runs the batch mode across ALL of a test case's default viewports (desktop
@@ -194,11 +275,12 @@ export async function runBatchAllViewports({ url, persona = 'all', outDir, maxSt
 // Starts a live `serve` session in the background; resolves once it prints
 // READY. Callers MUST call stopServe() in a finally block -- the served
 // browser stays alive (and the process keeps running) until `stop` is called.
-export function startServe({ url, persona = 'all', viewport = 'desktop', port, outDir, storageState }) {
+export function startServe({ url, persona = 'all', viewport = 'desktop', port, outDir, storageState, userAgent }) {
   return new Promise((resolve, reject) => {
     const args = [RUNNER, 'serve', '--url', url, '--viewport', viewport, '--persona', persona, '--out', outDir];
     if (port != null) args.push('--port', String(port));
     if (storageState) args.push('--storage-state', storageState);
+    if (userAgent) args.push('--user-agent', userAgent);
     const proc = spawn('node', args, { cwd: REPO_ROOT });
     let out = '';
     let err = '';
