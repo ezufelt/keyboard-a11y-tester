@@ -32,6 +32,13 @@ Launches Chromium, navigates to the start page, and blocks, keeping the browser 
 to stdout on startup — the invoking agent parses this line to get the session directory
 used by every subsequent command. Ends when a matching `stop <session-dir>` call is made.
 
+The other subcommands reach the live browser over a Unix socket (a named pipe on Windows),
+normally `<session-dir>/control.sock`. AF_UNIX caps socket paths at 104 bytes on macOS, which
+the default `/var/folders/…` TMPDIR can exhaust on its own, so when the session path would
+overflow, the socket moves to `<tmpdir>/ka11y-<hash>/control.sock` — created `0700` and removed
+on `stop`. Both `serve` and the client commands derive it from the session dir alone, so you
+never pass its location; you only need it if you're inspecting a session by hand.
+
 ### `observe <session-dir>` — read current state without acting
 
 Reports the currently focused element (selector, tag, accessible name/role/state) and, for
@@ -75,10 +82,33 @@ Signals the running `serve` process to close the browser and exit. No stdout out
 | `--port <n>` | integer | `9333` | `serve` | CDP remote-debugging port for the live session. |
 | `--press <Key>` | enum (see key list above) | `Tab` | `step` | The single keystroke to send. |
 | `--type <text>` | string | — | `step` | Types text instead of pressing a key. |
+| `--user-agent <ua>` | string | Chromium's headless default | default mode, `serve` | Overrides the browser user-agent. See "CDN/WAF blocks" below. |
 | `-h`, `--help` | flag | — | default mode | Prints usage and exits 0. |
 
 Also: instead of `--url`, any command that accepts it can instead take a positional path to a
 saved scenario file (see `test-cases/TEMPLATE.test.yaml`).
+
+## Navigation failure and CDN/WAF blocks
+
+A navigation whose response status is **>= 400 aborts the run** (exit 1) rather than auditing the
+error page. `page.goto()` resolves successfully on any HTTP status — it only rejects on transport
+errors — so without this guard a CloudFront 403 or a 404 gets crawled like a real page. That
+produces findings that are confidently wrong rather than absent: an error body has no focusable
+elements, so the Tab-crawl reads it as a 2.1.2 keyboard trap and the census reads it as a page with
+no landmarks. There is no override flag; fix the URL or the block instead.
+
+The most common cause is the browser being **headless**. Chromium's default headless user-agent
+carries a `HeadlessChrome/<version>` token that bot rules (CloudFront, Cloudflare, Akamai) routinely
+reject outright — the same URL loads fine in a headed browser, which is why `npx playwright open`
+can succeed against a site the runner cannot reach. Pass the equivalent headful UA:
+
+```bash
+node scripts/runner.mjs serve --url https://example.com \
+  --user-agent 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
+```
+
+Like the `navigator.webdriver` suppression in `ensureCaptchaCompat`, this is deliberately opt-in —
+the honest UA remains the default, and an operator has to ask for the override.
 
 ## Output file schema
 

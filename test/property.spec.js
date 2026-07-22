@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import fc from 'fast-check';
-import { severityFor, makeFinding, validatePersona, resolveStorageState, parseArgs, pickViewport } from '../scripts/lib/cli-helpers.mjs';
+import { severityFor, makeFinding, validatePersona, resolveStorageState, parseArgs, pickViewport, controlSockPath, SUN_PATH_MAX } from '../scripts/lib/cli-helpers.mjs';
 import { relLum } from '../scripts/lib/color.mjs';
 
 const KNOWN_FLAGS = [
   '--out', '--viewport', '--max-steps', '--press', '--type', '--port',
-  '--url', '--goal', '--storage-state', '--persona', '-h', '--help',
+  '--url', '--goal', '--storage-state', '--persona', '--user-agent', '-h', '--help',
 ];
 
 test('severityFor always returns a known severity for any input string', () => {
@@ -100,6 +100,60 @@ test('resolveStorageState accepts a well-formed storageState export and returns 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// `serve` used to bind a socket at <session-dir>/control.sock unconditionally.
+// On macOS the per-user TMPDIR (/var/folders/<2>/<28>/T/) is ~49 of the 104
+// AF_UNIX bytes before the tool's own path is appended, so any site slug over
+// ~5 characters overflowed and listen(2) failed with a bare EINVAL naming no
+// limit -- `serve` was unusable for essentially every real site. The length
+// bound is the whole point of the function, so assert it over arbitrary dirs
+// rather than the one path that happened to break.
+test('controlSockPath never exceeds the platform AF_UNIX path limit, for any session dir', () => {
+  fc.assert(
+    fc.property(fc.string({ maxLength: 400 }), fc.constantFrom('darwin', 'linux'), (dir, platform) => {
+      const sock = controlSockPath(dir, { platform, tmpdir: os.tmpdir() });
+      expect(Buffer.byteLength(sock)).toBeLessThan(SUN_PATH_MAX);
+    }),
+  );
+});
+
+// Non-negotiable: `serve` binds the socket and the separate observe/step/
+// finish/stop processes connect to it. They never exchange the path, so each
+// re-derives it from the session dir -- if that derivation were not a pure
+// function of `dir`, the clients would silently fail to reach a live session.
+test('controlSockPath is deterministic in the session dir', () => {
+  fc.assert(
+    fc.property(fc.string({ maxLength: 400 }), fc.constantFrom('darwin', 'linux'), (dir, platform) => {
+      const opts = { platform, tmpdir: os.tmpdir() };
+      expect(controlSockPath(dir, opts)).toBe(controlSockPath(dir, opts));
+    }),
+  );
+});
+
+// Distinct sessions must never collide on one socket, or a second `serve`
+// would hijack the first's control channel. Compared after path.resolve: "a"
+// and "a/" are the same directory and *should* share a socket, so raw string
+// inequality is the wrong precondition here.
+test('controlSockPath maps genuinely distinct session dirs to distinct sockets', () => {
+  fc.assert(
+    fc.property(
+      fc.string({ maxLength: 400 }), fc.string({ maxLength: 400 }), fc.constantFrom('darwin', 'linux'),
+      (a, b, platform) => {
+        fc.pre(path.resolve(a) !== path.resolve(b));
+        const opts = { platform, tmpdir: os.tmpdir() };
+        expect(controlSockPath(a, opts)).not.toBe(controlSockPath(b, opts));
+      },
+    ),
+  );
+});
+
+// The fallback is a fallback: a session dir that fits must keep its socket
+// beside it, where it is discoverable and torn down with the session.
+test('controlSockPath keeps the socket in the session dir whenever it fits', () => {
+  const shortDir = path.join(os.tmpdir(), 'ka');
+  const sock = controlSockPath(shortDir, { platform: 'linux', tmpdir: os.tmpdir() });
+  expect(sock).toBe(path.join(shortDir, 'control.sock'));
 });
 
 test('parseArgs never throws on argv that never mentions --max-steps', () => {
