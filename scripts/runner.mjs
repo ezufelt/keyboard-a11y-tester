@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { validatePersona, resolveStorageState, makeFinding, parseArgs, pickViewport } from './lib/cli-helpers.mjs';
+import { validatePersona, resolveStorageState, makeFinding, parseArgs, pickViewport, controlSockPath } from './lib/cli-helpers.mjs';
 import { relLum } from './lib/color.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,11 +69,16 @@ to start the browser with its cookies and localStorage (e.g. an already-logged-i
 Generate one with \`context.storageState({ path: 'auth.json' })\` or \`npx playwright codegen
 --save-storage=auth.json <url>\`.
 
+Blocked by a CDN/WAF? Chromium runs headless, and its default user-agent carries a
+"HeadlessChrome" token that bot rules (e.g. CloudFront) often reject with a 403. The run
+aborts rather than audit the error page; pass --user-agent "<a real browser UA string>"
+to present the equivalent headful UA.
+
 Batch (blind Tab-crawl over the start page, per viewport):
-  node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) [--out <dir>] [--viewport <name>] [--max-steps <n>] [--storage-state <file>] [--persona <keyboard|screen-reader|all>]
+  node scripts/runner.mjs (--url <url> [--goal "<task>"] | <test-case.yaml>) [--out <dir>] [--viewport <name>] [--max-steps <n>] [--storage-state <file>] [--persona <keyboard|screen-reader|all>] [--user-agent <ua>]
 
 Live agentic session (the agent observes and decides each keystroke):
-  node scripts/runner.mjs serve  (--url <url> [--goal "<task>"] | <test-case.yaml>) [--viewport <name>] [--out <dir>] [--port <n>] [--storage-state <file>] [--persona <keyboard|screen-reader|all>]
+  node scripts/runner.mjs serve  (--url <url> [--goal "<task>"] | <test-case.yaml>) [--viewport <name>] [--out <dir>] [--port <n>] [--storage-state <file>] [--persona <keyboard|screen-reader|all>] [--user-agent <ua>]
        → launches a persistent browser, navigates, prints the session dir. Keep running.
        → --url runs against any site ad-hoc (no YAML); --viewport desktop|mobile (default desktop).
        → --storage-state applies once at launch; the session browser keeps the state alive
@@ -1635,7 +1640,25 @@ const DOM_QUIET_TRACKER_JS = `(() => {
   }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ${JSON.stringify(FOCUSABLE_ATTRS)} });
 })();`;
 
-async function makeContext(browser, viewport, disableAnimations, storageState, persona = 'all') {
+// A CDN/WAF block (CloudFront 403) or a plain 404 still resolves page.goto()
+// as a *successful* navigation -- Playwright only rejects on transport errors,
+// not on HTTP status. Every check downstream then runs against the error page
+// and reports confident, entirely fictitious findings: a 403 body has no
+// focusable elements, so a Tab-crawl over it looks exactly like a 2.1.2
+// keyboard trap, and the census looks like a page with no landmarks. Refuse to
+// audit it instead.
+function assertNavigable(resp, url) {
+  const status = resp ? resp.status() : null;
+  if (status !== null && status >= 400) {
+    throw new Error(
+      `Navigation to ${url} returned HTTP ${status} — refusing to audit an error page.\n` +
+      `  If a CDN/WAF is blocking headless Chromium, retry with --user-agent "<a real browser UA string>".`,
+    );
+  }
+  return resp;
+}
+
+async function makeContext(browser, viewport, disableAnimations, storageState, persona = 'all', userAgent = null) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: 1,
@@ -1643,6 +1666,13 @@ async function makeContext(browser, viewport, disableAnimations, storageState, p
     isMobile: viewport.name === 'mobile',
     hasTouch: viewport.name === 'mobile',
     ...(storageState ? { storageState } : {}),
+    // Chromium's headless default UA carries a "HeadlessChrome/<v>" token that
+    // CDN/WAF bot rules (CloudFront, Cloudflare) routinely block outright --
+    // the run then audits a 403 error page instead of the site. --user-agent
+    // lets the operator present the equivalent headful UA. Deliberately opt-in:
+    // the honest UA stays the default, matching the navigator.webdriver policy
+    // in ensureCaptchaCompat (suppress a bot signal only where a human asked).
+    ...(userAgent ? { userAgent } : {}),
     // Keyboard-only persona: no real mouse should ever be used. We simply never
     // call pointer APIs; there is no Playwright switch to hard-disable the mouse.
   });
@@ -1760,7 +1790,7 @@ async function ensureCaptchaCompat(context, page) {
 async function runViewport(browser, testCase, viewport, opts) {
   const persona = opts.persona || 'all';
   const disableAnimations = testCase.runtime?.disable_animations !== false;
-  const context = await makeContext(browser, viewport, disableAnimations, opts.storageState, persona);
+  const context = await makeContext(browser, viewport, disableAnimations, opts.storageState, persona, opts.userAgent);
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send('DOM.enable');
@@ -1790,7 +1820,7 @@ async function runViewport(browser, testCase, viewport, opts) {
 
   const startUrl = testCase.target.start_url;
   log(`  [${viewport.name}] navigating ${startUrl}`);
-  await page.goto(startUrl, { waitUntil: 'load', timeout: 60000 });
+  assertNavigable(await page.goto(startUrl, { waitUntil: 'load', timeout: 60000 }), startUrl);
   await waitForReady(page);
   if (needsScreenReader(persona)) await startVsr(page);
 
@@ -1856,15 +1886,8 @@ const CHROMIUM_ARGS = [
 // decides the next keystroke — the control loop lives in the agent, not here.
 // ---------------------------------------------------------------------------
 
-// Windows named pipes live in a flat, virtual `\\.\pipe\` namespace, not the
-// real filesystem -- binding an AF_UNIX-style socket file under a Temp
-// directory is unreliable there (EACCES on GitHub Actions' windows-latest
-// runners). Derive a unique pipe name from `dir` instead; on other platforms
-// a plain socket file under `dir` works fine.
-function controlSockPath(dir) {
-  if (process.platform === 'win32') return '\\\\.\\pipe\\' + dir.replace(/[:\\]/g, '_');
-  return path.join(dir, 'control.sock');
-}
+// controlSockPath() lives in lib/cli-helpers.mjs -- it is pure, and the
+// AF_UNIX path-length limit it enforces is worth property-testing directly.
 
 function sessionPaths(dir) {
   return {
@@ -2164,6 +2187,10 @@ async function cmdServe(args) {
   const dir = path.join(outRoot, testCase.id, `session-${safeSeg(vp.name)}`);
   const paths = sessionPaths(dir);
   ensureDir(paths.screenshotsDir);
+  // The socket only lands outside the session dir when the session path would
+  // overflow the AF_UNIX limit (see controlSockPath); ensureDir is 0700 either
+  // way, so the fallback location is created just as private as the session.
+  ensureDir(path.dirname(paths.controlSock));
   if (fs.existsSync(paths.stopFile)) fs.rmSync(paths.stopFile);
   if (fs.existsSync(paths.controlSock)) fs.rmSync(paths.controlSock);
 
@@ -2182,7 +2209,7 @@ async function cmdServe(args) {
   }
 
   const disableAnimations = testCase.runtime?.disable_animations !== false;
-  const context = await makeContext(browser, vp, disableAnimations, storageState, persona);
+  const context = await makeContext(browser, vp, disableAnimations, storageState, persona, args.userAgent);
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send('DOM.enable');
@@ -2205,7 +2232,18 @@ async function cmdServe(args) {
     });
   }
 
-  await page.goto(testCase.target.start_url, { waitUntil: 'load', timeout: 60000 });
+  // Unlike the batch path (whose browser.close() lives in a finally), `serve`
+  // deliberately keeps the browser alive past this function -- so a failed
+  // navigation has to tear it down itself rather than orphan a Chromium.
+  try {
+    assertNavigable(
+      await page.goto(testCase.target.start_url, { waitUntil: 'load', timeout: 60000 }),
+      testCase.target.start_url,
+    );
+  } catch (err) {
+    await browser.close().catch(() => {});
+    throw err;
+  }
   await waitForReady(page);
   if (needsScreenReader(persona)) await startVsr(page);
   const captchaCompat = await ensureCaptchaCompat(context, page);
@@ -2307,6 +2345,11 @@ async function cmdServe(args) {
   clearInterval(stopFilePoll);
   await new Promise((resolve) => server.close(resolve));
   fs.rmSync(paths.controlSock, { force: true });
+  // A fallback socket lives in its own directory outside the session tree, so
+  // nothing else would ever clean it up; the session's own dir is the user's
+  // output and must survive.
+  const sockDir = path.dirname(paths.controlSock);
+  if (sockDir !== paths.dir) fs.rmSync(sockDir, { recursive: true, force: true });
   await pendingCensus; // let any in-flight census finish before the page/browser goes away
   await browser.close();
   log('session stopped');
@@ -2428,7 +2471,7 @@ async function main() {
     // instead of one-at-a-time — Promise.all preserves the `viewports` order
     // in `results` regardless of which finishes first.
     const results = await Promise.all(
-      viewports.map((vp) => runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState, persona }))
+      viewports.map((vp) => runViewport(browser, testCase, vp, { outDir, maxSteps: args.maxSteps, timestamp, storageState, persona, userAgent: args.userAgent }))
     );
     const summary = results.map((r) => ({ viewport: r.viewport, steps: r.steps, findings: r.findings }));
     const censusByViewport = {};

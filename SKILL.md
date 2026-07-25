@@ -71,6 +71,16 @@ sequence of Tabs.** "Tab 6 times" is wrong; "Tab *until the focused control is n
    or `--persona screen-reader` (no pixel/focus-indicator work, no `:focus-visible` startup gate —
    irrelevant to a blind persona).
 
+   If `serve` aborts with `returned HTTP 403 — refusing to audit an error page`, a CDN/WAF is
+   blocking headless Chromium on its user-agent (very common on CloudFront/Cloudflare sites; the
+   same URL loads fine in a headed browser). Retry with a headful UA — and tell the user you did:
+   ```bash
+   --user-agent 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
+   ```
+   Never work around the abort by auditing the error page — a blocked page has no focusable
+   elements, so it reads as a keyboard trap and a landmark-less page, and every finding you'd
+   write from it would be fiction.
+
    To test a page that requires login, pass `--storage-state <file>` with a saved Playwright
    storageState JSON (cookies + localStorage from an already-authenticated session). It's applied
    once when the session's browser launches, and the state stays alive for every `step` after that

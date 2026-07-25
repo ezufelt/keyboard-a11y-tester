@@ -73,6 +73,15 @@ persona: 1.1.1, 1.3.1, 4.1.2, 4.1.3). Full mapping in `docs/interface.md`.
 (`trace.json`, `deterministic-findings.json`, `screen-reader-census.json`, `run-summary.json`,
 `cross-viewport-findings.json`, `screenshots/step_NNNN.png`) — **never into the repo**.
 
+**Live-session control channel**: `serve` binds a Unix socket (Windows: a named pipe) that
+`observe`/`step`/`finish`/`stop` connect to; each derives the path independently from the session
+dir via `controlSockPath()` in `scripts/lib/cli-helpers.mjs`, so it must stay a pure function of
+that dir. It normally sits at `<session-dir>/control.sock`, but AF_UNIX caps the path at 104 bytes
+on macOS — and macOS's `/var/folders/…` TMPDIR alone spends ~49 — so when the session path would
+overflow, the socket falls back to `<tmpdir>/ka11y-<hash>/control.sock`. Both locations are created
+`0700`: the socket grants full control of a possibly-authenticated browser, and on Linux the temp
+root is the shared, world-writable `/tmp`.
+
 **No build step**: deliberate (CONTRIBUTING.md: "Don't introduce a bundler/transpiler"). Plain
 `.mjs` ES modules (`"type": "module"`), Node ≥20. `@guidepup/virtual-screen-reader`'s pre-bundled
 browser ESM is consumed via runtime regex-extraction rather than a bundler.
@@ -90,7 +99,10 @@ fixtures assert expected findings, plus a false-positive guard via `clean.html`)
 `step`/`finish`/`stop` round trip), `storage-state.spec.js` (auth seeding),
 `security.spec.js` (local-hardening regressions: secret-field redaction in the trace/steps, opt-in
 CDP debug port, `0700` output dirs, path-traversal sanitization — asserted on the runner's on-disk
-output, using the `secret-field.html` fixture).
+output, using the `secret-field.html` fixture), `navigation-status.spec.js` (a >=400 start-page
+response aborts instead of auditing the error page, in both batch and `serve`; `--user-agent`
+actually reaches the wire — both use status-controlled servers from `test/helpers.js`, not fixture
+files).
 
 **Prove a bug-fix or security test red-green before committing it.** These are black-box output
 assertions, so a test that never actually exercises the defect passes vacuously. For any regression
