@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-25
+
+### Added
+- `--user-agent`: opt-in override for the browser's UA string. Chromium's headless default
+  carries a "HeadlessChrome" token that CDN/WAF bot rules routinely reject, so a site that
+  loads fine in a headed browser could 403 under the runner with no way to work around it. The
+  honest UA remains the default, matching the existing `navigator.webdriver` policy in
+  `ensureCaptchaCompat` — a bot signal is only suppressed where a human asked for it.
+- CI: CodeQL (`.github/workflows/codeql.yml`) now scans on every PR, not just pushes to `main`.
+
+### Fixed
+- The runner no longer audits a non-2xx start page. `page.goto()` resolves successfully on any
+  HTTP status — it only rejects on transport errors — so a CDN/WAF 403 or a plain 404 was
+  crawled like a real page, producing findings that are confidently wrong rather than absent
+  (an error body has no focusable elements, so it read as a 2.1.2 keyboard trap, and the census
+  read as a page with no landmarks). `assertNavigable()` now aborts the run on any status
+  `>= 400`, in both batch and `serve`, with no override — there's no legitimate reason to audit
+  a page the operator never asked for.
+- `serve` failed to start on macOS (`listen EINVAL`, no limit named) for any site slug longer
+  than about five characters. AF_UNIX caps socket paths at 104 bytes there (108 on Linux), and
+  macOS's per-user `/var/folders` `TMPDIR` alone spends ~49 of those before the tool appends its
+  own path. `controlSockPath()` (moved to `scripts/lib/cli-helpers.mjs`, since the bound it
+  enforces is worth testing directly) now falls back to `<tmpdir>/ka11y-<hash>/control.sock`,
+  in its own `0700` directory, when the session-dir path would overflow. Batch mode binds no
+  socket and was unaffected.
+
 ## [0.7.0] - 2026-07-13
 
 ### Changed
@@ -194,7 +220,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Saved-scenario support (`*.test.yaml`, see `test-cases/TEMPLATE.test.yaml`) alongside
   ad-hoc `--url` runs.
 
-[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.2.0...v0.5.0
