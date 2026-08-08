@@ -7,12 +7,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Keyboard-only + screen-reader web accessibility tester. Drives a real Chromium browser
 keyboard-only and emits evidence-linked WCAG findings for two W3C personas simultaneously:
 a keyboard-only user ("Ade") and a screen-reader user ("Lakshmi"). Ships primarily as a Claude
-Code plugin/skill (see `SKILL.md`), and can also run standalone as a CLI.
+Code plugin/skill (see `skills/keyboard-a11y-tester/SKILL.md`), and can also run standalone as
+a CLI. The plugin root also carries a spec-conformant `plugin.json` (per
+[agent-plugins.org](https://agent-plugins.org/)), alongside Claude Code's own
+`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
 The tool is two layers:
 - A **deterministic runner** (`scripts/runner.mjs`) that drives the browser and computes the
   machine-decidable subset of WCAG checks.
-- An **AI-judgment layer** — the invoking agent itself, per `SKILL.md` — which drives one keystroke
+- An **AI-judgment layer** — the invoking agent itself, per `skills/keyboard-a11y-tester/SKILL.md`
+  — which drives one keystroke
   at a time via `serve`/`observe`/`step`, reads each JSON observation, and adds findings that are
   not structurally computable (task completion, logical order, announcement quality), merging them
   with `deterministic-findings.json`.

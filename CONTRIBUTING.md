@@ -102,7 +102,10 @@ Windows (`.github/workflows/test.yml`).
   (`cli-helpers.mjs`: arg parsing/validation and finding construction; `color.mjs`: WCAG
   relative luminance).
 - `scripts/setup-check.mjs` — preflight dependency/browser check.
-- `SKILL.md` — instructions for the agent driving this as a Claude Code skill.
+- `skills/keyboard-a11y-tester/SKILL.md` — instructions for the agent driving this as a skill.
+- `plugin.json` — root [Agent Plugins](https://agent-plugins.org/) manifest (universal, any
+  compliant client). `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` are
+  Claude Code's own plugin/marketplace manifests.
 - `references/architecture.md` — how the runner is built, for anyone extending it.
 - `test-cases/TEMPLATE.test.yaml` — optional saved-scenario format.
 

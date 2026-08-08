@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-08
+
+### Added
+- Root-level `plugin.json` conforming to the [Agent Plugins 1.0.0](https://agent-plugins.org/)
+  spec (published by Vercel, OpenAI, Microsoft, AWS, Cursor, and Google), so this plugin is
+  discoverable by any compliant client, not just Claude Code.
+
+### Changed
+- `SKILL.md` moved to `skills/keyboard-a11y-tester/SKILL.md`, the layout the Agent Plugins spec
+  requires for skill discovery (`skills/<name>/SKILL.md`; there is no root-level fallback in the
+  universal spec, only in Claude Code's own loader). `scripts/`, `references/`, `test-cases/`,
+  and `docs/` stay at the plugin root unchanged — `SKILL.md` now says to `cd` there first, since
+  its own commands are root-relative. Claude Code's `.claude-plugin/plugin.json` and
+  `marketplace.json` are unaffected and continue to work as before.
+
 ## [1.0.0] - 2026-08-08
 
 First stable release. From here on, the output schema documented in `docs/interface.md`
