@@ -94,14 +94,14 @@ test.describe('seeded-defect fixtures', () => {
     }
   });
 
-  test('clean.html: zero AA (pass/fail) findings', async () => {
+  test('clean.html: zero pass/fail (A/AA) findings', async () => {
     const outDir = tmpOutDir();
     try {
       const { findings } = await runBatch({ url: fixtureUrl('clean.html'), persona: 'all', outDir, maxSteps: 15 });
       // AAA findings are informative-only by this tool's own design (never a
-      // scenario failure) -- only AA findings represent an actual defect here.
-      const aaFindings = findings.filter((f) => f.conformance_level === 'AA');
-      expect(aaFindings, JSON.stringify(aaFindings, null, 2)).toEqual([]);
+      // scenario failure) -- only pass/fail (A/AA) findings represent an actual defect here.
+      const passFailFindings = findings.filter((f) => f.conformance_level !== 'AAA');
+      expect(passFailFindings, JSON.stringify(passFailFindings, null, 2)).toEqual([]);
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }
@@ -188,9 +188,9 @@ test.describe('seeded-defect fixtures', () => {
     try {
       const { findings, trace } = await runBatch({ url: fixtureUrl('clean.html'), persona: 'keyboard', outDir, maxSteps: 15 });
       // AAA findings are informative-only; area-measurement varies by platform
-      // rendering (macOS vs Linux/SwiftShader). Only AA findings are defects.
-      const aaFindings = findings.filter((f) => f.conformance_level === 'AA');
-      expect(aaFindings, JSON.stringify(aaFindings, null, 2)).toEqual([]);
+      // rendering (macOS vs Linux/SwiftShader). Only pass/fail (A/AA) findings are defects.
+      const passFailFindings = findings.filter((f) => f.conformance_level !== 'AAA');
+      expect(passFailFindings, JSON.stringify(passFailFindings, null, 2)).toEqual([]);
       // Regression guard: contrast corruption on step_0001 was the original bug.
       // If it regresses the measured contrast drops below 3:1; platform-area
       // variance (which only affects the AAA area sub-check) is a separate concern.

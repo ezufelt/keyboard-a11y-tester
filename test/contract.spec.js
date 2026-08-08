@@ -36,7 +36,7 @@ test('trace.json and deterministic-findings.json keep their documented shape', a
     for (const f of findings) {
       expect(['keyboard', 'screen-reader']).toContain(f.persona);
       expect(['step_id', 'selector']).toContain(f.evidence_kind);
-      expect(['AA', 'AAA']).toContain(f.conformance_level);
+      expect(['A', 'AA', 'AAA']).toContain(f.conformance_level);
       expect(f.wcag).toMatch(/^\d+\.\d+\.\d+$/);
     }
   } finally {

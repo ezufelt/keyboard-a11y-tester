@@ -237,7 +237,7 @@ Each entry in `findings[]`:
 | `source` | `"deterministic"` | |
 | `persona` | `"keyboard"` \| `"screen-reader"` | |
 | `evidence_kind` | `"step_id"` \| `"selector"` | |
-| `conformance_level` | `"AA"` \| `"AAA"` | AAA findings are informative and never fail the run. |
+| `conformance_level` | `"A"` \| `"AA"` \| `"AAA"` | The SC's actual WCAG level. AAA findings are informative and never fail the run. |
 | `confidence` | number (0–1) | |
 | `severity` | `"blocker"` \| `"serious"` \| `"moderate"` \| `"minor"` | |
 | `viewport` | string | |
