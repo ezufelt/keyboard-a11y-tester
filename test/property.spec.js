@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import fc from 'fast-check';
-import { severityFor, makeFinding, validatePersona, resolveStorageState, parseArgs, pickViewport, controlSockPath, SUN_PATH_MAX } from '../scripts/lib/cli-helpers.mjs';
+import { severityFor, levelFor, makeFinding, validatePersona, resolveStorageState, parseArgs, pickViewport, controlSockPath, SUN_PATH_MAX } from '../scripts/lib/cli-helpers.mjs';
 import { relLum } from '../scripts/lib/color.mjs';
 
 const KNOWN_FLAGS = [
@@ -30,6 +30,21 @@ test('severityFor never throws, including on empty string, unicode, and very lon
   );
 });
 
+test('levelFor reflects each checked SC\'s actual WCAG conformance level, not a hardcoded default', () => {
+  const A = ['1.1.1', '1.3.1', '1.4.1', '2.1.1', '2.1.2', '2.4.1', '2.4.3', '3.2.1', '3.3.2', '4.1.2'];
+  const AA = ['2.4.7', '4.1.3'];
+  const AAA = ['2.4.13'];
+  for (const wcag of A) expect(levelFor(wcag)).toBe('A');
+  for (const wcag of AA) expect(levelFor(wcag)).toBe('AA');
+  for (const wcag of AAA) expect(levelFor(wcag)).toBe('AAA');
+});
+
+test('makeFinding derives conformance_level from the SC when no explicit level is passed', () => {
+  expect(makeFinding({ id: 'x', wcag: '4.1.2', confidence: 1, viewport: 'desktop', summary: 's', evidence: [], locations: [] }).conformance_level).toBe('A');
+  expect(makeFinding({ id: 'x', wcag: '2.4.1', confidence: 1, viewport: 'desktop', summary: 's', evidence: [], locations: [] }).conformance_level).toBe('A');
+  expect(makeFinding({ id: 'x', wcag: '2.4.7', confidence: 1, viewport: 'desktop', summary: 's', evidence: [], locations: [] }).conformance_level).toBe('AA');
+});
+
 test('makeFinding always produces output matching the documented trace/findings contract', () => {
   fc.assert(
     fc.property(
@@ -46,7 +61,7 @@ test('makeFinding always produces output matching the documented trace/findings 
         const finding = makeFinding(input);
         expect(['keyboard', 'screen-reader']).toContain(finding.persona);
         expect(['step_id', 'selector']).toContain(finding.evidence_kind);
-        expect(['AA', 'AAA']).toContain(finding.conformance_level);
+        expect(['A', 'AA', 'AAA']).toContain(finding.conformance_level);
         expect(['blocker', 'serious', 'moderate', 'minor']).toContain(finding.severity);
         expect(Array.isArray(finding.locations)).toBe(true);
         expect(Array.isArray(finding.evidence)).toBe(true);

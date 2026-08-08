@@ -149,8 +149,30 @@ function severityFor(wcag) {
   return Object.hasOwn(SEVERITY_BY_WCAG, wcag) ? SEVERITY_BY_WCAG[wcag] : 'moderate';
 }
 
-// conformance_level: 'AA' findings are pass/fail; 'AAA' findings are INFORMATIVE
-// (advisory) — never a scenario failure on their own.
+// The actual WCAG conformance level of each SC this tool checks — distinct from
+// pass/fail-vs-informative behavior, which stays keyed on the literal 'AAA' value below.
+const LEVEL_BY_WCAG = {
+  '1.1.1': 'A',
+  '1.3.1': 'A',
+  '1.4.1': 'A',
+  '2.1.1': 'A',
+  '2.1.2': 'A',
+  '2.4.1': 'A',
+  '2.4.3': 'A',
+  '3.2.1': 'A',
+  '3.3.2': 'A',
+  '4.1.2': 'A',
+  '2.4.7': 'AA',
+  '4.1.3': 'AA',
+  '2.4.13': 'AAA',
+};
+
+function levelFor(wcag) {
+  return Object.hasOwn(LEVEL_BY_WCAG, wcag) ? LEVEL_BY_WCAG[wcag] : 'AA';
+}
+
+// conformance_level: the SC's actual WCAG level (A/AA/AAA). 'AAA' findings are also
+// INFORMATIVE (advisory) — never a scenario failure on their own.
 function makeFinding({ id, wcag, confidence, viewport, goalId, summary, impact, evidence, severity, level, url, locations, persona, evidenceKind }) {
   return {
     id,
@@ -158,7 +180,7 @@ function makeFinding({ id, wcag, confidence, viewport, goalId, summary, impact, 
     source: 'deterministic',
     persona: persona || 'keyboard',          // 'keyboard' | 'screen-reader'
     evidence_kind: evidenceKind || 'step_id', // 'step_id' | 'selector'
-    conformance_level: level || 'AA',
+    conformance_level: level || levelFor(wcag),
     confidence,
     severity: severity || severityFor(wcag),
     viewport,
@@ -171,4 +193,4 @@ function makeFinding({ id, wcag, confidence, viewport, goalId, summary, impact, 
   };
 }
 
-export { severityFor, makeFinding };
+export { severityFor, levelFor, makeFinding };
