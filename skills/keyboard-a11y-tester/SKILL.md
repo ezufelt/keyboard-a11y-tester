@@ -31,8 +31,10 @@ readers and real users.
 
 ## Setup (check first, then ASK before installing)
 
-All commands run from this skill's directory (`cd` into it). Run the preflight, then
-install only what's missing — and **ask the user first** each time:
+All commands below run from the **plugin's root directory** (where `package.json` and
+`scripts/` live — two levels up from this file, which lives in `skills/keyboard-a11y-tester/`).
+`cd` there first. Run the preflight, then install only what's missing — and **ask the user
+first** each time:
 
 ```bash
 node scripts/setup-check.mjs   # prints JSON: { deps_installed, browser_available, ... }

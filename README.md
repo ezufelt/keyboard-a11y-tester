@@ -15,7 +15,8 @@ It has two layers:
   computing the machine-decidable checks for both personas;
 - an **AI-judgment layer** — the invoking agent — that reads the trace/screenshots/census
   and judges what rules can't (task completion, logical focus/reading order, form
-  quality, announcement quality). See `SKILL.md` for how an agent drives it.
+  quality, announcement quality). See `skills/keyboard-a11y-tester/SKILL.md` for how an
+  agent drives it.
 
 Standalone and portable: it depends only on `playwright`, `yaml`, `pngjs`, `pixelmatch`,
 and `@guidepup/virtual-screen-reader`, needs no bundled test cases, and writes all output
@@ -37,7 +38,11 @@ schema, WCAG checks table).
 
 The first command registers this repo as a marketplace (named `ezufelt`, per
 `.claude-plugin/marketplace.json`); the second installs the plugin. Once installed, the
-skill in `SKILL.md` becomes available to the agent.
+skill in `skills/keyboard-a11y-tester/SKILL.md` becomes available to the agent.
+
+The repo also ships a root-level `plugin.json` conforming to the
+[Agent Plugins](https://agent-plugins.org/) spec, so any compliant client (not just Claude
+Code) can discover and load the skill the same way.
 
 **As a standalone clone** — clone the repo and install its dependencies:
 
