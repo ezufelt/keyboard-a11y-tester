@@ -2,8 +2,10 @@
 
 ## Supported Versions
 
-This project is pre-1.0 (`0.x`). Only the latest release on `main` is supported;
-there are no maintained backport branches.
+Only the latest release is supported. Security fixes ship forward in a new release
+cut from `main`; there are no maintained backport branches, so earlier `1.x` releases
+and the whole `0.x` line receive no patches. If you are pinned to an older version,
+the upgrade path is forward to the current release.
 
 ## Reporting a Vulnerability
 

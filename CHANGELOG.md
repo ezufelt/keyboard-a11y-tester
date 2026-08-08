@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-08
+
+First stable release. From here on, the output schema documented in `docs/interface.md`
+(`trace.json`, `deterministic-findings.json`, `screen-reader-census.json`, `run-summary.json`,
+`cross-viewport-findings.json`) and the CLI surface — the default batch crawl, the
+`serve`/`observe`/`step`/`finish`/`stop` subcommands, and their flags — are the project's public
+contract: a breaking change to either requires a major version. The prose of individual finding
+summaries, and the judgment the invoking agent layers on top per `SKILL.md`, are deliberately
+outside that promise.
+
+### Fixed
+- `conformance_level` now reports each success criterion's real WCAG level. `makeFinding()`
+  hardcoded `'AA'` for every finding except the one 2.4.13 call site that passed `'AAA'`
+  explicitly, so the field actually meant "not AAA" and mislabeled all ten Level A checks
+  (1.1.1, 1.3.1, 1.4.1, 2.1.1, 2.1.2, 2.4.1, 2.4.3, 3.2.1, 3.3.2, 4.1.2) as AA. A `levelFor()`
+  lookup keyed on the SC now supplies the default. This changes output that downstream consumers
+  may filter on: those ten SCs now come back as `'A'`, so a filter of
+  `conformance_level === 'AA'` will match far fewer findings than before. (#27)
+
 ## [0.8.0] - 2026-07-25
 
 ### Added
@@ -220,10 +239,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Saved-scenario support (`*.test.yaml`, see `test-cases/TEMPLATE.test.yaml`) alongside
   ad-hoc `--url` runs.
 
-[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.2.0...v0.5.0
+[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.8.0...1.0.0
+[0.8.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.7.0...0.8.0
+[0.7.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.6.0...0.7.0
+[0.6.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.5.0...0.6.0
+[0.5.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.2.0...0.5.0
 [0.2.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ezufelt/keyboard-a11y-tester/releases/tag/v0.1.0
