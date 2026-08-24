@@ -143,6 +143,9 @@ Keyboard persona (per focus stop visited):
 - **1.4.1** indicator not colour-only · **2.1.2** focus stalls (trap) · **2.4.1** skip link ·
   **2.4.3** positive tabindex · **3.2.1** context change on focus · **3.3.2** file input named only
   by the UA default ("Choose File", no author label) · **4.1.2** missing accessible name.
+- **2.1.1** (page audit) element with a click/pointer handler plus `cursor: pointer` or inline
+  `onclick`, but not keyboard-focusable and no interactive role — a mouse-only control
+  (function failure, so it files under this profile).
 
 Screen-reader persona (from the page-wide census + live announcements):
 - **1.1.1** images with no accessible name (missing alt/aria-label).
@@ -157,6 +160,18 @@ Screen-reader persona (from the page-wide census + live announcements):
   `aria-hidden="true"` combined with a focusable `tabindex`).
 - **4.1.3** a declared live region (`aria-live`/`role=status|alert|log|alertdialog`) that never
   announced anything all session.
+- **1.1.1** (page audit, WCAG failure F3) interactive control whose only visual content is a CSS
+  background image — element-level or `::before`/`::after` — and whose accessible name is empty;
+  the image never enters the accessibility tree, so its meaning is conveyed visually only.
+- **1.1.1** (page audit, WCAG failure F39 family) interactive control whose only content is an
+  image explicitly suppressed from assistive tech (`alt=""` / `role="presentation"` /
+  `aria-hidden` / unnamed svg) — "decorative" cannot be right for a nameless control's sole
+  content.
+- **4.1.2** (page audit) keyboard-focusable, click-handled element with no interactive role —
+  reachable, so not a function failure; what breaks is representation: announced as generic
+  text, nothing guarantees Enter/Space work.
+- **4.1.2** (page audit) explicit ARIA role missing its required state attribute (`checkbox`
+  without `aria-checked`, `combobox` without `aria-expanded`, `slider` without `aria-valuenow`).
 - **1.3.1** (batch mode, `cross-viewport-findings.json`, only when >1 viewport ran) a named
   interactive control present in one viewport's census but absent from another's for the same
   URL. Low confidence (0.4) — often intentional responsive design (e.g. a collapsed nav), treat
@@ -170,6 +185,19 @@ reading-order sequence (`entries`, each `{spoken_phrase, role, tag, selector}`),
 (`aria-flowto` relationships — descriptive only, no deterministic check reads this, use it for
 the reading-order judgment call below). Read this once per page for the judgment calls below —
 it's the richest source for 2.4.6/1.3.2/label-quality/reading-order review.
+
+`page-audit.json` (written for every persona) — per-URL lead material beyond the deterministic
+subset above: `background_images` (every `url()` background, element-level and
+`::before`/`::after`, with size, text/name context, and whether an interactive ancestor exists),
+`suppressed_images` (every `alt=""` / `role="presentation"` / `aria-hidden` / unnamed-svg image
+— the ones the accessibility tree silently drops, censused precisely so YOU can second-guess
+the "decorative" declaration), and `interactive_candidates` (elements that look wired for
+interaction — pointer listeners, inline `onclick`, locally-set `cursor: pointer` — without
+interactive semantics; framework-delegated handlers surface only via the cursor signal, so treat
+`pointer_listener: false` entries as leads to probe, not findings). On the final audited page,
+sizeable `background_images`/`suppressed_images` entries carry a `screenshot` field
+(`screenshots/audit_NNN.png`) — an actual crop of the image region, so you can look at the
+pixels when judging.
 
 ## What YOU add (the AI-judgment findings)
 
@@ -194,6 +222,27 @@ Read the trace + screenshots and write findings the scanners can't, using the SA
 - **Live-region behavior beyond "ever fired"** — does *every* dynamic update you'd expect to be
   announced actually show up in a step's `live_announcements`, not just at least one all session
   (see the `sr_announcement` guidance above)?
+- **Images the tree can't see: decorative or meaningful?** — the deterministic F3/F39 checks
+  only fire for interactive, nameless, image-only controls. Everything else is YOUR call, and
+  the audit gives you the pixels to make it: open each entry's `screenshots/audit_NNN.png` crop
+  and look.
+  - `background_images` (sizeable, non-repeating, no text over it, not `aria-hidden`): if the
+    crop shows content — a chart, a product photo, an icon that distinguishes
+    otherwise-identical controls — that content has no text alternative → 1.1.1. A repeated
+    texture or ambience behind readable text is decorative — no finding.
+  - `suppressed_images` (`alt=""`, `role=presentation`, `aria-hidden`, unnamed svg): the author
+    *claimed* decorative — verify it. A 16px flourish or an icon beside equivalent visible text
+    is a correct `alt=""`; a suppressed photo, chart, badge ("4.5 stars", "Sale"), or the only
+    thing distinguishing two controls is a wrong one → 1.1.1, citing the crop and the `reason`.
+    An `aria-hidden` icon inside a *named* control (`interactive_context.heuristic_name`
+    non-empty) is the canonical correct pattern — leave it alone.
+  Crops exist only for the final audited page; for earlier pages, judge from the entry's
+  context fields or navigate back and re-run `finish`.
+- **Suspected mouse-only controls** — probe `interactive_candidates` live: Tab toward the
+  element (can focus ever land on it?), and for focusable ones press Enter and Space and check
+  whether anything actually happens. A candidate that visibly responds to click affordances but
+  not to any keystroke is a confirmed 2.1.1; one the deterministic layer only saw via
+  `cursor: pointer` (framework-delegated handler) needs exactly this confirmation.
 
 Every finding MUST: reference the evidence (step id(s), or a page selector for screen-reader
 census-sourced findings), carry a confidence score, map to a specific WCAG SC, name the page

@@ -61,9 +61,11 @@ Defaults to `--press Tab` if neither `--press` nor `--type` is given.
 ### `finish <session-dir>` — close out the session's evidence
 
 Finalizes focus-visible/focus-appearance metrics (keyboard persona), guarantees the current
-page has a screen-reader census entry, derives all findings, and writes `trace.json`,
-`deterministic-findings.json`, and (screen-reader persona) `screen-reader-census.json` into
-the session directory. Prints a `{ steps, findings }` summary to stdout.
+page has a screen-reader census entry, re-runs the page audit on the final page (interactions
+since `load` may have attached listeners), derives all findings, and writes `trace.json`,
+`deterministic-findings.json`, `page-audit.json`, and (screen-reader persona)
+`screen-reader-census.json` into the session directory. Prints a `{ steps, findings }` summary
+to stdout.
 
 ### `stop <session-dir>` — end a live session
 
@@ -127,6 +129,7 @@ from a `*.test.yaml` file, or — when run from `--url` — the URL's hostname w
     trace.json
     deterministic-findings.json
     screen-reader-census.json         # only if the screen-reader persona ran
+    page-audit.json                   # per-URL interaction/background-image audit (all personas)
     screenshots/step_NNNN.png
   session-<viewport>/                 # live mode (serve/observe/step/finish)
     session.json                      # live session state
@@ -137,6 +140,7 @@ from a `*.test.yaml` file, or — when run from `--url` — the URL's hostname w
     trace.json                        # written by `finish`
     deterministic-findings.json       # written by `finish`
     screen-reader-census.json         # written by `finish`, if screen-reader persona ran
+    page-audit.json                   # written by `finish` (all personas)
 ```
 
 ### `trace.json`
@@ -277,6 +281,70 @@ Each `entries[]` item:
 | `tag` | string \| null | |
 | `selector` | string \| null | |
 
+### `page-audit.json`
+
+Shared instrumentation, written for **every** run regardless of persona (batch: per viewport;
+live: by `finish`) — there is no third persona: each audit-backed check files under one of the
+two existing profiles by what it breaks (**function** — the control cannot be operated →
+keyboard; **semantics/perception** — it operates but is misrepresented or invisible to
+assistive tech → screen-reader).
+Top level: `{ test_case_id, viewport, generated_at, pages }` (batch mode) or
+`{ test_case_id, viewport, mode: "driven-live", pages }` (live mode). `pages` is keyed by URL;
+each page is audited once on `load` and the **final** page is re-audited at the end of the
+run/`finish` (framework hydration attaches listeners after `load`, so the later sweep supersedes
+the load-time one). The listener sweep uses Chrome's console-only `getEventListeners()` (via CDP
+`Runtime.evaluate` with `includeCommandLineAPI`) — the only way to see `addEventListener`-attached
+handlers. Framework-delegated handlers (e.g. React's root-level synthetic events) are **not**
+attributable to individual elements; for those, only the `cursor: pointer` signal appears.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `captured_at` | string (ISO timestamp) | |
+| `background_images` | array | Every visible element whose computed `background-image` contains a `url()` (pure gradients excluded) — element-level **and** `::before`/`::after` pseudo-elements (including `content: url(...)`), since icon-by-pseudo-element leaves the element itself styleless — see below. |
+| `suppressed_images` | array | Visible `img`/`svg`/`input[type=image]` elements withheld from assistive tech (`alt=""`, `role="presentation|none"`, `aria-hidden`) or unnamed (bare inline `svg` with no `aria-label`/`aria-labelledby`/`<title>`) — see below. |
+| `interactive_candidates` | array | Elements that *look* wired for interaction but expose no interactive semantics — see below. |
+| `scroll_x`, `scroll_y` | number | Scroll offsets at sweep time; bboxes are viewport-relative, so bbox + offsets = full-page coordinates. |
+| `roles_missing_required_state` | array of `{ selector, role, missing_attribute }` | Explicit ARIA role missing the state the ARIA spec requires for it (`checkbox`/`switch`/`radio`/`menuitemcheckbox`/`menuitemradio` → `aria-checked`, `combobox` → `aria-expanded`, `slider`/`scrollbar` → `aria-valuenow`). Native form tags are skipped (their own semantics may carry the state). Backs the corresponding 4.1.2 finding. |
+| `elements_scanned` | integer | DOM elements swept (capped at 15000). |
+| `truncated` | boolean | An entry cap (200 per section) or the element cap was hit. |
+| `timed_out` | boolean | Only present if the sweep timed out (15s); sections are then empty. |
+| `failed` | boolean | Only present if the sweep threw; sections are then empty. |
+
+Each `background_images[]` item: `{ selector, pseudo, tag, bbox, urls, background_repeat,
+has_text, aria_hidden, role, heuristic_name, interactive_context, screenshot? }` (`pseudo` is
+`null`, `"::before"`, or `"::after"`; a pseudo entry's selector/bbox are the owner element's).
+Each `suppressed_images[]` item: `{ selector, tag, bbox, reason, src, interactive_context,
+screenshot? }` with `reason` one of `"empty-alt" | "role-presentation" | "aria-hidden" |
+"unnamed-svg"`. In both, `interactive_context` is `null` or the nearest interactive
+self-or-ancestor as `{ selector, has_text, has_replaced_content, heuristic_name, aria_hidden }` —
+`has_replaced_content` deliberately ignores suppressed images (an `alt=""` img cannot name its
+parent link, so it must not shield it from the image-only checks). The deterministic 1.1.1
+checks (F3 for backgrounds, F39 for suppressed images) fire only when that context has no text,
+no name-bearing replaced content, and no accessible name. Everything else is **data for the AI
+layer's decorative-vs-meaningful judgment** (CSS backgrounds never enter the accessibility tree
+and vanish under forced-colors, and an `alt=""` on a content-carrying image silences it — both
+are 1.1.1 problems even on non-interactive elements, and that call needs the pixels).
+
+**Evidence crops**: after the final page's audit, each sizeable `background_images` /
+`suppressed_images` entry gets a `screenshot` field pointing at a crop
+(`screenshots/audit_NNN.png`, capped at 40 per page, 4px padding) taken from one full-page
+frame — this is what the AI layer looks at to judge an image it cannot otherwise see. Before
+capturing, the runner sweeps the scroll position down the page and back to fire lazy loaders
+(native `loading="lazy"`, IntersectionObserver src-swappers), then waits (bounded, 3s) for
+in-flight image fetches — otherwise a below-fold lazy image crops as a blank rectangle. Crops
+exist only for the **final** audited page (earlier pages are gone by derivation time) and are
+written for every persona: the screen-reader persona skips the per-step focus-pixel pipeline
+(`step_*.png`), not this evidence capture.
+
+Each `interactive_candidates[]` item: `{ selector, tag, bbox, listener_types, pointer_listener,
+key_listener, inline_onclick, cursor_pointer, tabindex, focusable, aria_hidden, heuristic_name,
+text }`. Candidates are elements with a pointer-event listener, an inline `onclick`, or a
+locally-set `cursor: pointer` (the weak framework-delegation signal) that are not natively
+interactive, carry no interactive ARIA role, sit inside no interactive ancestor, and contain no
+interactive descendants (delegation containers, `<html>`/`<body>` global delegation excluded).
+Deterministic findings only fire on the corroborated subsets (see the WCAG table); the rest is
+lead material for the AI layer to probe live.
+
 ### `cross-viewport-findings.json`
 
 Batch mode only, written after the viewport loop completes, and only when the screen-reader
@@ -291,10 +359,14 @@ textbox, etc.) present in one viewport's census `entries` for a URL but entirely
 another's — flagged at `confidence: 0.4` (low; often intentional responsive design, e.g. a
 collapsed nav, so treat as a lead to confirm, not a confirmed defect).
 
-### `screenshots/step_NNNN.png`
+### `screenshots/step_NNNN.png` and `screenshots/audit_NNN.png`
 
-A crop of the full-page screenshot around the focused element, inflated by 8px on every
-side (to capture outline/box-shadow rings that render outside the element's border box).
+`audit_NNN.png` are the page audit's image-evidence crops (see `page-audit.json` above) —
+written for every persona, final audited page only.
+
+`step_NNNN.png` is a crop of the full-page screenshot around the focused element, inflated by
+8px on every side (to capture outline/box-shadow rings that render outside the element's border
+box).
 Written only when the focused element has a usable bounding box (width and height both
 ≥ 1px); otherwise the corresponding step's `focused_region_screenshot` is `null`. In live
 mode, the uncropped full-page frame per step (used by `finish` to compute focus-visible
@@ -308,29 +380,38 @@ Checks are evaluated **per focus stop the persona actually visits** (keyboard pe
 against a page-wide structural census (screen-reader persona) — this is *scenario* testing,
 not an exhaustive page audit. Conformance target: **AA is pass/fail, AAA is informative.**
 
+The Level column is each SC's **actual** WCAG conformance level (matching the finding's
+`conformance_level`); A and AA are both pass/fail, AAA is informative.
+
 | WCAG | Level | Persona | Check |
 |------|-------|---------|-------|
 | 2.4.7 | AA | keyboard | Focus indicator **present** — a declared `outline`/`box-shadow` in the computed style, or a pixel change on focus. (2.4.7 sets no size/contrast bar.) |
 | 2.4.13 | AAA (informative) | keyboard | Focus indicator **strength** — changed area ≥ a 2px-thick perimeter **and** ≥ 3:1 focused/unfocused contrast. Advisory, never a fail. |
-| 1.4.1 | AA | keyboard | Indicator is not colour-only (a shape cue exists) |
-| 2.1.2 | AA | keyboard | Keyboard trap — focus stalls for several consecutive Tabs |
-| 2.4.1 | AA | keyboard | No skip link near the top of the tab order |
-| 2.4.3 | AA | keyboard | Positive `tabindex` (logical/visual order is an AI check) |
-| 3.2.1 | AA | keyboard | Context change (navigation) from focus alone |
-| 3.3.2 | AA | keyboard | File input named only by the user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but no author label conveys the field's purpose |
-| 4.1.2 | AA | keyboard | Focusable control with no accessible name (blocks speech control) |
-| 1.1.1 | AA | screen-reader | Image/graphic with no accessible name (missing alt text/aria-label) |
-| 1.3.1 | AA | screen-reader | Heading level skip (jumps past one or more levels) |
-| 1.3.1 | AA | screen-reader | Duplicate, unlabeled landmark roles (can't be told apart by role alone) |
-| 4.1.2 | AA | screen-reader | Interactive control whose whole announcement is a bare role — reading-order superset of the keyboard-persona 4.1.2 check, also catches arrow-key browse-mode-only controls |
-| 4.1.2 | AA | screen-reader | Broken ARIA ID reference — `aria-controls`/`aria-describedby`/`aria-details`/`aria-errormessage` whose ID(s) resolve to no element in the page. A multi-ID value only flags if none of its IDs resolve. |
-| 4.1.2 | AA | screen-reader | Keyboard-focusable control absent from the accessibility-tree census — almost always `aria-hidden="true"` combined with a focusable `tabindex`, cross-referencing the keyboard persona's Tab-reachable trace against this page's census |
+| 1.4.1 | A | keyboard | Indicator is not colour-only (a shape cue exists) |
+| 2.1.1 | A | keyboard | Page audit: element with a pointer handler plus a "meant to be clicked" corroboration (`cursor: pointer` or inline `onclick`) that is neither keyboard-focusable nor semantically interactive — mouse-only control |
+| 2.1.2 | A | keyboard | Keyboard trap — focus stalls for several consecutive Tabs |
+| 2.4.1 | A | keyboard | No skip link near the top of the tab order |
+| 2.4.3 | A | keyboard | Positive `tabindex` (logical/visual order is an AI check) |
+| 3.2.1 | A | keyboard | Context change (navigation) from focus alone |
+| 3.3.2 | A | keyboard | File input named only by the user-agent default ("Choose File") — the control has an ACCNAME so 4.1.2 stays quiet, but no author label conveys the field's purpose |
+| 4.1.2 | A | keyboard | Focusable control with no accessible name (blocks speech control) |
+| 1.1.1 | A | screen-reader | Image/graphic with no accessible name (missing alt text/aria-label) |
+| 1.1.1 | A | screen-reader | Page audit (WCAG failure F3): interactive control whose only visual content is a CSS background image — element-level or `::before`/`::after` — and whose accessible name is empty; meaning conveyed visually only (backgrounds never enter the accessibility tree and vanish under forced-colors) |
+| 1.1.1 | A | screen-reader | Page audit (WCAG failure F39 family): interactive control whose only content is an image explicitly suppressed from assistive tech (`alt=""`, `role="presentation"`, `aria-hidden`, unnamed svg) — "decorative" cannot be right for a nameless control's sole content |
+| 1.3.1 | A | screen-reader | Heading level skip (jumps past one or more levels) |
+| 1.3.1 | A | screen-reader | Duplicate, unlabeled landmark roles (can't be told apart by role alone) |
+| 4.1.2 | A | screen-reader | Interactive control whose whole announcement is a bare role — reading-order superset of the keyboard-persona 4.1.2 check, also catches arrow-key browse-mode-only controls |
+| 4.1.2 | A | screen-reader | Broken ARIA ID reference — `aria-controls`/`aria-describedby`/`aria-details`/`aria-errormessage` whose ID(s) resolve to no element in the page. A multi-ID value only flags if none of its IDs resolve. |
+| 4.1.2 | A | screen-reader | Keyboard-focusable control absent from the accessibility-tree census — almost always `aria-hidden="true"` combined with a focusable `tabindex`, cross-referencing the keyboard persona's Tab-reachable trace against this page's census |
+| 4.1.2 | A | screen-reader | Page audit: keyboard-focusable, click-handled element exposing no interactive role — reachable (so not a keyboard-function failure) but announced as generic text with no activation contract |
+| 4.1.2 | A | screen-reader | Page audit: explicit ARIA role missing its required state attribute (`role=checkbox` with no `aria-checked`, `combobox` with no `aria-expanded`, `slider`/`scrollbar` with no `aria-valuenow`) |
 | 4.1.3 | AA | screen-reader | A declared live region (`aria-live`/`role=status\|alert\|log\|alertdialog`) that never announced anything all session |
-| 1.3.1 | AA | screen-reader | Cross-viewport census comparison (`cross-viewport-findings.json`, batch mode, >1 viewport only) — a named interactive control present in one viewport's census but absent from another's for the same URL. Low confidence (0.4): often intentional responsive design, needs human confirmation. |
+| 1.3.1 | A | screen-reader | Cross-viewport census comparison (`cross-viewport-findings.json`, batch mode, >1 viewport only) — a named interactive control present in one viewport's census but absent from another's for the same URL. Low confidence (0.4): often intentional responsive design, needs human confirmation. |
 
 The scenario-level verdicts — "was every control *needed to complete the goal* reachable"
-(2.1.1) and "no trap *on the path*" (full 2.1.2) — need the AI-driven goal path, so the
-agent produces them from the trace. The 2.4.1 / 4.1.2 keyboard-persona checks directly
+(2.1.1) and "no trap *on the path*" (full 2.1.2) — still need the AI-driven goal path, so the
+agent produces them from the trace; the page-audit 2.1.1 check above is the structural subset
+(a control no keyboard path can ever reach), not the goal-path verdict. The 2.4.1 / 4.1.2 keyboard-persona checks directly
 support the W3C keyboard+speech persona ("Ade",
 <https://www.w3.org/WAI/people-use-web/user-stories/story-one/>); the screen-reader-persona
 checks support the W3C blind/screen-reader persona ("Lakshmi",

@@ -75,10 +75,29 @@ Two-instance model:
 The runner owns the machine-decidable checks. Keyboard persona: 2.1.1 / 2.1.2 / 2.4.1 /
 2.4.3 / 2.4.7 / 3.2.1 / 4.1.2. Screen-reader persona: 1.1.1 / 1.3.1 (heading skips,
 duplicate unlabeled landmarks) / 4.1.2 (bare-role controls) / 4.1.3 (silent declared live
-regions). The AI layer reads `trace.json` + `screenshots/` + `screen-reader-census.json`
-and judges what rules can't: task completion, logical focus/reading order vs visual
-layout, focus-indicator and announcement perceivability/quality, custom-widget APG
-patterns, and form quality.
+regions). On top of the trace and census, a shared **page audit** runs once per URL
+(`runPageAudit()`, findings via `deriveFindingsPageAudit()`): a whole-DOM sweep through
+CDP `Runtime.evaluate` with `includeCommandLineAPI: true` — the flag that exposes
+Chrome's console-only `getEventListeners()`, the only way to see `addEventListener`-
+attached handlers. It yields `page-audit.json` (`background_images` — element-level and
+`::before`/`::after`; `suppressed_images` — `alt=""`/`role=presentation`/`aria-hidden`/
+unnamed-svg images; `interactive_candidates`; `roles_missing_required_state`) and backs
+five checks, each filed under an existing profile by what it breaks — **function →
+keyboard**: mouse-only click-handled elements (2.1.1); **semantics/perception →
+screen-reader**: focusable click-handled elements with no role (4.1.2), ARIA roles
+missing their required state (4.1.2), interactive controls whose only visual content is
+a CSS background image with no accessible name (1.1.1, failure F3), and interactive
+controls whose only content is an explicitly suppressed image (1.1.1, failure F39
+family). The final page's image entries also get pixel evidence crops
+(`screenshots/audit_NNN.png`) for the AI layer's decorative-vs-meaningful judgment. The
+audit is instrumentation, not a third persona — every finding still carries
+`persona: keyboard|screen-reader`. The AI layer reads `trace.json` + `screenshots/` + `screen-reader-census.json` +
+`page-audit.json` and judges what rules can't: task completion, logical focus/reading
+order vs visual layout, focus-indicator and announcement perceivability/quality,
+custom-widget APG patterns, form quality, decorative-vs-meaningful background images,
+and live confirmation of suspected mouse-only controls (framework-delegated handlers
+are invisible to the per-element listener sweep — only the `cursor: pointer` lead
+surfaces them).
 
 ## Findings & output
 
@@ -91,8 +110,8 @@ viewport, url, locations, summary, persona_impact, evidence[] }` (`persona` and
 `evidence_kind` are additive fields; `persona` defaults to `'keyboard'` and
 `evidence_kind` to `'step_id'` when absent, so older consumers of this shape don't break).
 The runner's I/O contract — a URL or test-case YAML in; `trace.json` /
-`deterministic-findings.json` / `screenshots/` / `screen-reader-census.json` out (under a
-temp dir) — is stable.
+`deterministic-findings.json` / `screenshots/` / `screen-reader-census.json` /
+`page-audit.json` out (under a temp dir) — is stable.
 
 ## Personas
 

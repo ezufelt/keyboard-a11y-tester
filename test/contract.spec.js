@@ -23,9 +23,20 @@ const FINDING_FIELDS = [
 test('trace.json and deterministic-findings.json keep their documented shape', async () => {
   const outDir = tmpOutDir();
   try {
-    const { trace, findings } = await runBatch({
+    const { trace, findings, pageAudit } = await runBatch({
       url: fixtureUrl('mixed-defects.html'), persona: 'all', outDir, maxSteps: 15,
     });
+
+    // page-audit.json is written for every run (persona-independent), one
+    // entry per audited URL with the three documented sections.
+    expect(pageAudit).not.toBeNull();
+    for (const field of ['test_case_id', 'viewport', 'pages']) expect(pageAudit).toHaveProperty(field);
+    const auditPages = Object.values(pageAudit.pages);
+    expect(auditPages.length).toBeGreaterThan(0);
+    for (const field of ['captured_at', 'background_images', 'interactive_candidates',
+      'roles_missing_required_state', 'elements_scanned', 'truncated']) {
+      expect(auditPages[0]).toHaveProperty(field);
+    }
 
     for (const field of TRACE_TOP_LEVEL_FIELDS) expect(trace).toHaveProperty(field);
     expect(trace.steps.length).toBeGreaterThan(0);

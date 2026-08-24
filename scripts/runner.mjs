@@ -653,16 +653,402 @@ async function runCensus(page) {
   return page.evaluate(RUN_CENSUS_JS).catch((e) => { log('  screen-reader census failed:', e.message || String(e)); return null; });
 }
 
+// The losing timer must be cleared (see runPageAuditWithTimeout): left
+// scheduled, it holds the Node event loop open for its full 20s after every
+// screen-reader batch run has otherwise finished.
 async function runCensusWithTimeout(page, ms = 20000) {
-  return Promise.race([
-    runCensus(page),
-    new Promise((resolve) =>
-      setTimeout(() => resolve({
-        entries: [], declared_live_regions: [], declared_broken_aria_refs: [],
-        declared_alternate_reading_order: [], truncated: true, timed_out: true,
-      }), ms)
-    ),
-  ]);
+  let timer;
+  try {
+    return await Promise.race([
+      runCensus(page),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({
+          entries: [], declared_live_regions: [], declared_broken_aria_refs: [],
+          declared_alternate_reading_order: [], truncated: true, timed_out: true,
+        }), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Page audit: interaction semantics + CSS background images
+// ---------------------------------------------------------------------------
+
+// One whole-page sweep per URL, persona-independent, run through CDP's
+// Runtime.evaluate with includeCommandLineAPI: true -- that flag is what makes
+// Chrome's console-only getEventListeners() available, which is the ONLY way
+// to see addEventListener-attached handlers (the page's own JS structurally
+// cannot enumerate them). Two concerns share the single DOM pass:
+//
+// 1. `background_images` -- every visible element whose computed
+//    background-image contains a url() (pure gradients excluded). CSS
+//    backgrounds never enter the accessibility tree and vanish under
+//    forced-colors/high-contrast, so a MEANINGFUL one is invisible twice
+//    over. Which ones are meaningful is mostly an AI-layer judgment; the
+//    deterministic subset (WCAG failure F3 -> 1.1.1) is an interactive
+//    element whose only visual content is the background image and whose
+//    accessible name is empty.
+//
+// 2. `interactive_candidates` -- elements with pointer handlers (or inline
+//    onclick, or a locally-set cursor:pointer as a weaker framework-delegation
+//    signal) that expose NO interactive semantics: not natively interactive,
+//    no interactive ARIA role, not inside an interactive ancestor. Containers
+//    with interactive descendants are skipped (event delegation), as are
+//    <html>/<body> (global delegation).
+//
+// Plus `roles_missing_required_state`: explicit ARIA roles missing the state
+// attribute the ARIA spec requires for that role (a checkbox with no
+// aria-checked announces its kind but never its state).
+const PAGE_AUDIT_JS = /* js */ `
+(() => {
+  function cssPath(node) {
+    if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) {
+      return '#' + CSS.escape(node.id);
+    }
+    const parts = [];
+    let cur = node;
+    while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+      let sel = cur.tagName.toLowerCase();
+      if (cur.id && document.querySelectorAll('#' + CSS.escape(cur.id)).length === 1) {
+        parts.unshift('#' + CSS.escape(cur.id));
+        break;
+      }
+      const parent = cur.parentNode;
+      if (parent) {
+        const sibs = Array.from(parent.children).filter(c => c.tagName === cur.tagName);
+        if (sibs.length > 1) sel += ':nth-of-type(' + (sibs.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(sel);
+      cur = cur.parentNode;
+    }
+    return parts.join(' > ');
+  }
+
+  // Same plain-DOM ACCNAME approximation as COLLECT_ACTIVE's heuristicName --
+  // good enough to tell "has some author-provided name" from "nameless".
+  function heuristicName(el) {
+    var v = el.getAttribute('aria-label');
+    if (v && v.trim()) return v.trim();
+    var ids = el.getAttribute('aria-labelledby');
+    if (ids) {
+      var t = ids.trim().split(/\\s+/).map(function (id) {
+        var ref = document.getElementById(id);
+        return ref ? (ref.innerText || ref.textContent || '').trim() : '';
+      }).filter(Boolean).join(' ').trim();
+      if (t) return t;
+    }
+    if (el.id) {
+      var lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lab && (lab.innerText || '').trim()) return lab.innerText.trim();
+    }
+    var wrap = el.closest('label');
+    if (wrap && (wrap.innerText || '').trim()) return wrap.innerText.trim();
+    if (el.tagName === 'IMG' && el.getAttribute('alt')) return el.getAttribute('alt').trim();
+    var title = el.getAttribute('title');
+    if (title && title.trim()) return title.trim();
+    return (el.innerText || '').trim();
+  }
+
+  // label included: clicking a label operates its control, so a click handler
+  // there is not a mouse-only control.
+  var NATIVE_INTERACTIVE = 'a[href],button,input,select,textarea,summary,label,' +
+    'audio[controls],video[controls],[contenteditable=""],[contenteditable="true"]';
+  var INTERACTIVE_ROLES = ['button', 'link', 'checkbox', 'radio', 'switch', 'menuitem',
+    'menuitemcheckbox', 'menuitemradio', 'option', 'tab', 'combobox', 'listbox', 'slider',
+    'spinbutton', 'searchbox', 'textbox', 'scrollbar', 'treeitem', 'gridcell'];
+  var REQUIRED_STATE_BY_ROLE = {
+    checkbox: 'aria-checked', switch: 'aria-checked', radio: 'aria-checked',
+    menuitemcheckbox: 'aria-checked', menuitemradio: 'aria-checked',
+    combobox: 'aria-expanded', slider: 'aria-valuenow', scrollbar: 'aria-valuenow',
+  };
+  var POINTER_EVENTS = ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown',
+    'pointerup', 'touchstart', 'touchend'];
+  var KEY_EVENTS = ['keydown', 'keyup', 'keypress'];
+  var INTERACTIVE_DESC = NATIVE_INTERACTIVE + ',[tabindex],' +
+    INTERACTIVE_ROLES.map(function (r) { return '[role=' + r + ']'; }).join(',');
+
+  function roleOf(el) { return (el.getAttribute('role') || '').trim().toLowerCase(); }
+  function isNativeInteractive(el) { return el.matches(NATIVE_INTERACTIVE); }
+  function hasInteractiveRole(el) { return INTERACTIVE_ROLES.indexOf(roleOf(el)) !== -1; }
+  function insideInteractive(el) {
+    for (var a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+      if (isNativeInteractive(a) || hasInteractiveRole(a)) return true;
+    }
+    return false;
+  }
+
+  // An image element the author has explicitly withheld from the
+  // accessibility tree (alt="", role=presentation/none, aria-hidden) or that
+  // exposes no name an accname computation could use (an unnamed inline svg).
+  function isSuppressedImage(node) {
+    var t = node.tagName.toLowerCase();
+    var r = (node.getAttribute('role') || '').trim().toLowerCase();
+    if (r === 'presentation' || r === 'none') return true;
+    if (node.closest('[aria-hidden="true"]')) return true;
+    if ((t === 'img' || t === 'input') && node.hasAttribute('alt') && !node.getAttribute('alt').trim()) return true;
+    if (t === 'svg' && !(node.getAttribute('aria-label') || '').trim() &&
+        !node.getAttribute('aria-labelledby') && !node.querySelector('title')) return true;
+    return false;
+  }
+
+  // Nearest interactive self-or-ancestor with the signals the image-only
+  // checks need. has_replaced_content deliberately ignores SUPPRESSED images:
+  // an alt="" img cannot name (or excuse) its nameless parent link, so it must
+  // not shield that link from the image-only-control checks.
+  function contextFor(el, selfSelector) {
+    var ctx = null;
+    for (var a = el; a && a.nodeType === 1; a = a.parentElement) {
+      var ti = parseInt(a.getAttribute('tabindex'), 10);
+      if (isNativeInteractive(a) || hasInteractiveRole(a) || ti >= 0) { ctx = a; break; }
+    }
+    if (!ctx) return null;
+    var named = false;
+    var repl = ctx.querySelectorAll('img,svg,canvas,video');
+    for (var ri = 0; ri < repl.length; ri++) {
+      var rt = repl[ri].tagName.toLowerCase();
+      if (rt === 'canvas' || rt === 'video' || !isSuppressedImage(repl[ri])) { named = true; break; }
+    }
+    return {
+      selector: ctx === el && selfSelector ? selfSelector : cssPath(ctx),
+      has_text: !!(ctx.innerText || '').trim(),
+      has_replaced_content: named,
+      heuristic_name: heuristicName(ctx).slice(0, 120),
+      aria_hidden: !!ctx.closest('[aria-hidden="true"]'),
+    };
+  }
+
+  var MAX_ELEMENTS = 15000, MAX_ENTRIES = 200;
+  var backgroundImages = [], candidates = [], missingStates = [], suppressedImages = [];
+  var all = document.querySelectorAll('*');
+  var truncated = all.length > MAX_ELEMENTS;
+  var scanned = Math.min(all.length, MAX_ELEMENTS);
+
+  for (var i = 0; i < scanned; i++) {
+    var el = all[i];
+    if (el === document.documentElement || el === document.body) continue;
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'script' || tag === 'style' || tag === 'head' || tag === 'meta' || tag === 'link' || tag === 'title') continue;
+    var cs = getComputedStyle(el);
+    var r = el.getBoundingClientRect();
+    var visible = r.width >= 1 && r.height >= 1 && cs.visibility !== 'hidden';
+    if (!visible) continue;
+    var role = roleOf(el);
+    var ariaHidden = !!el.closest('[aria-hidden="true"]');
+    var bbox = { x: r.x, y: r.y, width: r.width, height: r.height };
+
+    // --- background images (element + ::before/::after) -------------------
+    var elSelector = null;
+    function bgEntry(styles, pseudo) {
+      var bi2 = styles.backgroundImage;
+      var ct = pseudo ? styles.content : 'none';
+      var hasBg = bi2 && bi2 !== 'none' && bi2.indexOf('url(') !== -1;
+      var hasContentUrl = ct && ct.indexOf('url(') !== -1;
+      if (!hasBg && !hasContentUrl) return;
+      if (pseudo && (!ct || ct === 'none')) return; // pseudo-element doesn't exist
+      if (backgroundImages.length >= MAX_ENTRIES) return;
+      if (!elSelector) elSelector = cssPath(el);
+      var src = hasBg ? bi2 : ct;
+      backgroundImages.push({
+        selector: elSelector, pseudo: pseudo || null, tag: tag, bbox: bbox,
+        urls: (src.match(/url\\([^)]*\\)/g) || []).map(function (u) { return u.slice(0, 200); }),
+        background_repeat: styles.backgroundRepeat,
+        has_text: !!(el.innerText || '').trim(),
+        aria_hidden: ariaHidden,
+        role: role || null,
+        heuristic_name: heuristicName(el).slice(0, 120),
+        interactive_context: contextFor(el, elSelector),
+      });
+    }
+    bgEntry(cs, null);
+    // Icon-by-pseudo-element is at least as common as icon-by-background:
+    // a bare ::before carrying the whole glyph leaves the element itself
+    // styleless, so the element-level check alone would miss it.
+    bgEntry(getComputedStyle(el, '::before'), '::before');
+    bgEntry(getComputedStyle(el, '::after'), '::after');
+
+    // --- suppressed images ------------------------------------------------
+    // Images the author declared decorative (alt="", role=presentation,
+    // aria-hidden) or left unnamed (bare inline svg). Whether "decorative"
+    // was the right call is the AI layer's judgment — this censuses them with
+    // context (they are otherwise invisible: the AX tree ignores them, so the
+    // census's unnamed-image check never sees them).
+    var isImageEl = tag === 'img' || tag === 'svg' ||
+      (tag === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'image');
+    if (isImageEl && suppressedImages.length < MAX_ENTRIES && isSuppressedImage(el)) {
+      if (!elSelector) elSelector = cssPath(el);
+      var sReason = null;
+      var sRole = roleOf(el);
+      if (sRole === 'presentation' || sRole === 'none') sReason = 'role-presentation';
+      else if (ariaHidden) sReason = 'aria-hidden';
+      else if (el.hasAttribute('alt')) sReason = 'empty-alt';
+      else sReason = 'unnamed-svg';
+      suppressedImages.push({
+        selector: elSelector, tag: tag, bbox: bbox, reason: sReason,
+        src: tag === 'svg' ? null : (el.currentSrc || el.getAttribute('src') || '').slice(0, 200),
+        interactive_context: contextFor(el, elSelector),
+      });
+    }
+
+    // --- ARIA role missing its required state -----------------------------
+    // Native form tags are skipped: their own semantics may already carry the
+    // state (e.g. <input type=checkbox role=switch> maps native checkedness).
+    if (role && Object.prototype.hasOwnProperty.call(REQUIRED_STATE_BY_ROLE, role) &&
+        tag !== 'input' && tag !== 'select' && tag !== 'option' &&
+        !el.hasAttribute(REQUIRED_STATE_BY_ROLE[role]) && missingStates.length < MAX_ENTRIES) {
+      missingStates.push({ selector: cssPath(el), role: role, missing_attribute: REQUIRED_STATE_BY_ROLE[role] });
+    }
+
+    // --- interactive candidates -------------------------------------------
+    if (isNativeInteractive(el) || hasInteractiveRole(el) || insideInteractive(el)) continue;
+    var listeners = typeof getEventListeners === 'function' ? getEventListeners(el) : {};
+    var types = Object.keys(listeners);
+    var pointerTypes = types.filter(function (t) { return POINTER_EVENTS.indexOf(t) !== -1; });
+    var keyTypes = types.filter(function (t) { return KEY_EVENTS.indexOf(t) !== -1; });
+    var inlineClick = el.hasAttribute('onclick');
+    // cursor:pointer inherits, so only the element where it STARTS counts --
+    // otherwise one styled container floods the list with every descendant.
+    var cursorPointer = cs.cursor === 'pointer';
+    var cursorStartsHere = cursorPointer &&
+      !(el.parentElement && getComputedStyle(el.parentElement).cursor === 'pointer');
+    if (!pointerTypes.length && !inlineClick && !cursorStartsHere) continue;
+    if (el.querySelector(INTERACTIVE_DESC)) continue; // delegation container
+    if (candidates.length >= MAX_ENTRIES) { truncated = true; continue; }
+    var tiAttr = parseInt(el.getAttribute('tabindex'), 10);
+    candidates.push({
+      selector: cssPath(el), tag: tag, bbox: bbox,
+      listener_types: pointerTypes.concat(keyTypes),
+      pointer_listener: pointerTypes.length > 0 || inlineClick,
+      key_listener: keyTypes.length > 0,
+      inline_onclick: inlineClick,
+      cursor_pointer: cursorPointer,
+      tabindex: isNaN(tiAttr) ? null : tiAttr,
+      focusable: tiAttr >= 0,
+      aria_hidden: ariaHidden,
+      heuristic_name: heuristicName(el).slice(0, 120),
+      text: (el.innerText || '').trim().slice(0, 80),
+    });
+  }
+
+  return {
+    background_images: backgroundImages,
+    suppressed_images: suppressedImages,
+    interactive_candidates: candidates,
+    roles_missing_required_state: missingStates,
+    // Viewport-relative bboxes + these offsets = full-page coordinates, which
+    // is what the audit-crop step needs against a fullPage screenshot.
+    scroll_x: window.scrollX, scroll_y: window.scrollY,
+    elements_scanned: scanned,
+    truncated: truncated,
+  };
+})()`;
+
+const EMPTY_PAGE_AUDIT = {
+  background_images: [], suppressed_images: [], interactive_candidates: [],
+  roles_missing_required_state: [], scroll_x: 0, scroll_y: 0,
+  elements_scanned: 0, truncated: true,
+};
+
+async function runPageAudit(cdp) {
+  try {
+    const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
+      expression: PAGE_AUDIT_JS,
+      includeCommandLineAPI: true, // getEventListeners() lives in the Command Line API only
+      returnByValue: true,
+    });
+    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description || exceptionDetails.text || 'audit threw');
+    return result.value || { ...EMPTY_PAGE_AUDIT, failed: true };
+  } catch (e) {
+    log('  page audit failed:', e.message || String(e));
+    return { ...EMPTY_PAGE_AUDIT, failed: true };
+  }
+}
+
+// Crops each candidate image region out of one full-page frame so the AI
+// layer can SEE the image it is judging (decorative vs meaningful) — an
+// entry's bbox alone says nothing about what the pixels show. Mutates the
+// audit's background_images / suppressed_images entries in place, adding a
+// `screenshot` path. Only the FINAL audited page can get crops: by the time
+// findings are derived, earlier pages are gone. Best-effort by design.
+const MAX_AUDIT_CROPS = 40;
+const AUDIT_CROP_PAD = 4;
+
+// Lazy-loaded media (native loading="lazy", IntersectionObserver src-swappers)
+// have no pixels until their region nears the viewport, so a crop taken from a
+// cold fullPage frame can be a blank rectangle (observed in the field: a
+// below-fold carousel of alt="" logos). Sweep the scroll position down the
+// page once to fire the loaders, restore it, then give in-flight image
+// fetches a bounded grace period. Best-effort: a failure here only degrades
+// crop quality, never the audit itself.
+async function triggerLazyLoads(page) {
+  await page.evaluate(async () => {
+    const orig = { x: window.scrollX, y: window.scrollY };
+    const step = Math.max(200, window.innerHeight - 100);
+    const limit = Math.min(document.documentElement.scrollHeight, step * 40);
+    for (let y = 0; y <= limit; y += step) {
+      window.scrollTo(0, y);
+      // Two frames per stop: one for IntersectionObserver callbacks to fire,
+      // one for the src swap they perform to be observed by the loader.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    }
+    window.scrollTo(orig.x, orig.y);
+    await Promise.race([
+      Promise.all(Array.from(document.images).filter((i) => !i.complete)
+        .map((i) => new Promise((r) => { i.onload = i.onerror = r; }))),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
+    // One settle frame so the freshly-decoded pixels are painted.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }).catch((e) => log('  lazy-load sweep failed:', e.message || String(e)));
+}
+
+async function captureAuditCrops(page, audit, screenshotsDir) {
+  try {
+    const entries = [...(audit.background_images || []), ...(audit.suppressed_images || [])]
+      .filter((e) => e.bbox && e.bbox.width >= 4 && e.bbox.height >= 4);
+    if (!entries.length) return;
+    if (entries.length > MAX_AUDIT_CROPS) log(`  audit crops: capping at ${MAX_AUDIT_CROPS} of ${entries.length} image regions`);
+    await triggerLazyLoads(page);
+    // bboxes are viewport-relative at sweep time; scroll offsets map them
+    // into the fullPage frame's coordinate space. (Lazy loads that insert
+    // layout-shifting content can still skew coordinates — accepted:
+    // crops are evidence, not measurements.)
+    const png = PNG.sync.read(await page.screenshot({ fullPage: true }));
+    const sx = audit.scroll_x || 0;
+    const sy = audit.scroll_y || 0;
+    let n = 0;
+    for (const e of entries.slice(0, MAX_AUDIT_CROPS)) {
+      const crop = cropPng(png, inflate({
+        x: e.bbox.x + sx, y: e.bbox.y + sy, width: e.bbox.width, height: e.bbox.height,
+      }, AUDIT_CROP_PAD));
+      const name = `audit_${String(++n).padStart(3, '0')}.png`;
+      fs.writeFileSync(path.join(screenshotsDir, name), PNG.sync.write(crop));
+      e.screenshot = `screenshots/${name}`;
+    }
+  } catch (e) {
+    log('  audit crops failed:', e.message || String(e));
+  }
+}
+
+// The losing timer must be cleared (and unref'd as a belt-and-braces): a
+// still-scheduled 15s setTimeout holds the Node event loop open after the run
+// finishes, adding its full duration to the process's wall-clock exit.
+async function runPageAuditWithTimeout(cdp, ms = 15000) {
+  let timer;
+  try {
+    return await Promise.race([
+      runPageAudit(cdp),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ ...EMPTY_PAGE_AUDIT, timed_out: true }), ms);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,8 +1917,139 @@ function deriveFindingsScreenReader({ steps, census }, { viewport, goalId }) {
   return findings;
 }
 
+// Machine-decidable checks over the per-URL page audit (see PAGE_AUDIT_JS).
+// The audit is shared instrumentation; each check files under one of the two
+// existing persona profiles by what it breaks: FUNCTION (the control cannot
+// be operated) -> keyboard, SEMANTICS/PERCEPTION (the control operates but is
+// misrepresented or invisible to assistive tech) -> screen-reader.
+function deriveFindingsPageAudit({ audits }, { viewport, goalId, persona }) {
+  const findings = [];
+  const pages = audits ? Object.entries(audits) : [];
+
+  if (needsKeyboardChecks(persona)) {
+    for (const [url, audit] of pages) {
+      const cands = (audit.interactive_candidates || []).filter((c) => !c.aria_hidden);
+
+      // --- 2.1.1 Keyboard: pointer-handled element with no keyboard path ---
+      // Function failure -> keyboard profile. Requires a corroborating "this
+      // is meant to be clicked" signal (cursor:pointer or an inline onclick
+      // attribute) on top of the pointer listener, so an analytics/hover
+      // listener alone can't fire a blocker.
+      const mouseOnly = cands.filter((c) => c.pointer_listener && !c.focusable && (c.cursor_pointer || c.inline_onclick));
+      if (mouseOnly.length) {
+        findings.push(makeFinding({
+          id: `handler-not-focusable-${viewport}`, wcag: '2.1.1', confidence: 0.65,
+          viewport, goalId, url, persona: 'keyboard', evidenceKind: 'selector',
+          summary: `${mouseOnly.length} element(s) on ${url} have a click/pointer handler and pointer styling but ` +
+            `are neither keyboard-focusable nor semantically interactive: ` +
+            mouseOnly.slice(0, 6).map((c) => c.selector).join(', '),
+          impact: 'A keyboard-only user cannot reach or activate this control at all — it only works with a mouse.',
+          evidence: mouseOnly.slice(0, 10).map((c) => c.selector),
+        }));
+      }
+    }
+  }
+
+  if (needsScreenReader(persona)) {
+    for (const [url, audit] of pages) {
+      const cands = (audit.interactive_candidates || []).filter((c) => !c.aria_hidden);
+
+      // --- 4.1.2 Name, Role, Value: focusable + click-handled, generic role -
+      // Semantics failure -> screen-reader profile: a keyboard user CAN reach
+      // it (it is focusable); what's broken is how it is represented — the
+      // element is announced as plain text/generic, with no activation
+      // contract conveyed.
+      const roleless = cands.filter((c) => c.pointer_listener && c.focusable);
+      if (roleless.length) {
+        findings.push(makeFinding({
+          id: `handler-missing-role-${viewport}`, wcag: '4.1.2', confidence: 0.7,
+          viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+          summary: `${roleless.length} element(s) on ${url} are keyboard-focusable and click-handled but expose no ` +
+            `interactive role (announced as plain text/generic): ` +
+            roleless.slice(0, 6).map((c) => c.selector).join(', '),
+          impact: 'A screen-reader user hears plain text where a control sits — nothing says it is interactive, ' +
+            'and nothing guarantees Enter/Space activate it the way a real button would.',
+          evidence: roleless.slice(0, 10).map((c) => c.selector),
+        }));
+      }
+      // --- 4.1.2 Name, Role, Value: role missing its ARIA-required state ----
+      const missing = audit.roles_missing_required_state || [];
+      if (missing.length) {
+        findings.push(makeFinding({
+          id: `role-missing-required-state-${viewport}`, wcag: '4.1.2', confidence: 0.85,
+          viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+          summary: `${missing.length} element(s) on ${url} declare an ARIA role without the state attribute that ` +
+            `role requires: ` +
+            missing.slice(0, 6).map((m) => `role="${m.role}" missing ${m.missing_attribute} on ${m.selector}`).join(', '),
+          impact: 'A screen-reader user is told what kind of control this is but never its current state ' +
+            '(checked, expanded, value).',
+          evidence: missing.slice(0, 10).map((m) => m.selector),
+        }));
+      }
+
+      // --- 1.1.1 Non-text Content (failure F3): control whose only visual ---
+      // content is a CSS background image, with no accessible name. The
+      // image never enters the accessibility tree and disappears under
+      // forced-colors, so its meaning is conveyed visually only. Dedupe on
+      // the interactive context: several bg-image descendants of one control
+      // are still one finding site.
+      const seenCtx = new Set();
+      const bgOnly = [];
+      for (const b of audit.background_images || []) {
+        const ctx = b.interactive_context;
+        if (!ctx || ctx.aria_hidden || ctx.has_text || ctx.has_replaced_content || ctx.heuristic_name) continue;
+        if (seenCtx.has(ctx.selector)) continue;
+        seenCtx.add(ctx.selector);
+        bgOnly.push(ctx);
+      }
+      if (bgOnly.length) {
+        findings.push(makeFinding({
+          id: `bg-image-only-control-${viewport}`, wcag: '1.1.1', confidence: 0.8,
+          viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+          summary: `${bgOnly.length} interactive control(s) on ${url} convey their meaning only through a CSS ` +
+            `background image — no text content, no accessible name (WCAG failure technique F3): ` +
+            bgOnly.slice(0, 6).map((c) => c.selector).join(', '),
+          impact: 'CSS background images never enter the accessibility tree and are removed in high-contrast/' +
+            'forced-colors mode, so a screen-reader user gets a nameless control and a low-vision user an invisible one.',
+          evidence: bgOnly.slice(0, 10).map((c) => c.selector),
+        }));
+      }
+
+      // --- 1.1.1 (failure F39 family): control whose only content is an ----
+      // image the author explicitly SUPPRESSED (alt="", role=presentation,
+      // aria-hidden, unnamed svg). "Decorative" cannot be the right call for
+      // the sole content of a nameless interactive control — suppressing it
+      // left the control with nothing to announce. seenCtx carries over from
+      // the F3 check so one control never yields both findings.
+      const suppressedOnly = [];
+      for (const s of audit.suppressed_images || []) {
+        const ctx = s.interactive_context;
+        if (!ctx || ctx.aria_hidden || ctx.has_text || ctx.has_replaced_content || ctx.heuristic_name) continue;
+        if (seenCtx.has(ctx.selector)) continue;
+        seenCtx.add(ctx.selector);
+        suppressedOnly.push(ctx);
+      }
+      if (suppressedOnly.length) {
+        findings.push(makeFinding({
+          id: `suppressed-image-only-control-${viewport}`, wcag: '1.1.1', confidence: 0.85,
+          viewport, goalId, url, persona: 'screen-reader', evidenceKind: 'selector',
+          summary: `${suppressedOnly.length} interactive control(s) on ${url} contain only an image that is ` +
+            `explicitly hidden from assistive tech (alt="" / role="presentation" / aria-hidden / unnamed svg), ` +
+            `leaving the control with no accessible name (WCAG failure technique F39): ` +
+            suppressedOnly.slice(0, 6).map((c) => c.selector).join(', '),
+          impact: 'The image was marked decorative, but it is the control’s entire content — a screen-reader ' +
+            'user gets a nameless control with no indication of what it does.',
+          evidence: suppressedOnly.slice(0, 10).map((c) => c.selector),
+        }));
+      }
+    }
+  }
+
+  return findings;
+}
+
 // Dispatches to one or both persona finding sets based on --persona.
-function deriveAllFindings({ steps, startUrl, contextChangeOnFocus, census }, { viewport, goalId, persona = 'all' }) {
+function deriveAllFindings({ steps, startUrl, contextChangeOnFocus, census, audits }, { viewport, goalId, persona = 'all' }) {
   const findings = [];
   if (needsKeyboardChecks(persona)) {
     findings.push(...deriveFindingsKeyboard({ steps, startUrl, contextChangeOnFocus }, { viewport, goalId }));
@@ -1540,6 +2057,7 @@ function deriveAllFindings({ steps, startUrl, contextChangeOnFocus, census }, { 
   if (needsScreenReader(persona)) {
     findings.push(...deriveFindingsScreenReader({ steps, census }, { viewport, goalId }));
   }
+  findings.push(...deriveFindingsPageAudit({ audits }, { viewport, goalId, persona }));
   return findings;
 }
 
@@ -1818,6 +2336,22 @@ async function runViewport(browser, testCase, viewport, opts) {
     });
   }
 
+  // Page audit (interaction semantics + background images): persona-
+  // independent -- both persona finding sets read it. Chained like the census
+  // so intermediate navigations are captured too.
+  const auditStore = {};
+  const auditedUrls = new Set();
+  let pendingAudit = Promise.resolve();
+  page.on('load', () => {
+    pendingAudit = pendingAudit.then(async () => {
+      const url = page.url();
+      if (!auditedUrls.has(url)) {
+        auditedUrls.add(url);
+        auditStore[url] = { captured_at: new Date().toISOString(), ...(await runPageAuditWithTimeout(cdp)) };
+      }
+    }).catch(() => {});
+  });
+
   const startUrl = testCase.target.start_url;
   log(`  [${viewport.name}] navigating ${startUrl}`);
   assertNavigable(await page.goto(startUrl, { waitUntil: 'load', timeout: 60000 }), startUrl);
@@ -1831,7 +2365,13 @@ async function runViewport(browser, testCase, viewport, opts) {
   const goalId = testCase.goals?.[0]?.id || null;
   const result = await crawl(page, cdp, { maxSteps: opts.maxSteps, screenshotsDir, persona, srState });
   await pendingCensus;
-  const findings = deriveAllFindings({ ...result, census: censusStore }, { viewport: viewport.name, goalId, persona });
+  await pendingAudit;
+  // Re-audit the page the crawl ended on: frameworks routinely attach
+  // listeners after 'load' (hydration), so the end-of-crawl sweep supersedes
+  // the load-time one for the current URL.
+  auditStore[page.url()] = { captured_at: new Date().toISOString(), ...(await runPageAuditWithTimeout(cdp)) };
+  await captureAuditCrops(page, auditStore[page.url()], screenshotsDir);
+  const findings = deriveAllFindings({ ...result, census: censusStore, audits: auditStore }, { viewport: viewport.name, goalId, persona });
 
   const trace = {
     test_case_id: testCase.id,
@@ -1862,6 +2402,13 @@ async function runViewport(browser, testCase, viewport, opts) {
       )
     );
   }
+  fs.writeFileSync(
+    path.join(vpDir, 'page-audit.json'),
+    JSON.stringify(
+      { test_case_id: testCase.id, viewport: viewport.name, generated_at: opts.timestamp, pages: auditStore },
+      null, 2
+    )
+  );
 
   log(`  [${viewport.name}] crawl: ${result.steps.length} steps, ${findings.length} finding(s) → ${vpDir}`);
 
@@ -2130,8 +2677,15 @@ async function handleFinish(state) {
     }
   }
 
+  // Re-audit the page the session ended on: interactions since 'load' may
+  // have attached listeners or revealed content the load-time sweep missed.
+  await state.pendingAudit;
+  const audits = state.auditStore;
+  audits[state.page.url()] = { captured_at: new Date().toISOString(), ...(await runPageAuditWithTimeout(state.cdp)) };
+  await captureAuditCrops(state.page, audits[state.page.url()], state.paths.screenshotsDir);
+
   const findings = deriveAllFindings(
-    { steps, startUrl: state.startUrl, contextChangeOnFocus: null, census },
+    { steps, startUrl: state.startUrl, contextChangeOnFocus: null, census, audits },
     { viewport: state.viewport, goalId: state.goalId, persona }
   );
 
@@ -2148,6 +2702,8 @@ async function handleFinish(state) {
     writeJson(path.join(state.paths.dir, 'screen-reader-census.json'),
       { test_case_id: state.caseId, viewport: state.viewport, mode: 'driven-live', pages: census });
   }
+  writeJson(path.join(state.paths.dir, 'page-audit.json'),
+    { test_case_id: state.caseId, viewport: state.viewport, mode: 'driven-live', pages: audits });
   log(`finished: ${steps.length} steps, ${findings.length} deterministic finding(s) → ${state.paths.dir}`);
   return { steps: steps.length, findings };
 }
@@ -2232,6 +2788,22 @@ async function cmdServe(args) {
     });
   }
 
+  // Page audit (interaction semantics + background images): persona-
+  // independent, chained per URL like the census; `finish` re-audits the final
+  // page (hydration attaches listeners after 'load') and writes the file.
+  const auditStore = {};
+  const auditedUrls = new Set();
+  let pendingAudit = Promise.resolve();
+  page.on('load', () => {
+    pendingAudit = pendingAudit.then(async () => {
+      const url = page.url();
+      if (!auditedUrls.has(url)) {
+        auditedUrls.add(url);
+        auditStore[url] = { captured_at: new Date().toISOString(), ...(await runPageAuditWithTimeout(cdp)) };
+      }
+    }).catch(() => {});
+  });
+
   // Unlike the batch path (whose browser.close() lives in a finally), `serve`
   // deliberately keeps the browser alive past this function -- so a failed
   // navigation has to tear it down itself rather than orphan a Chromium.
@@ -2276,8 +2848,10 @@ async function cmdServe(args) {
     viewport: vp.name, viewportSize: { width: vp.width, height: vp.height },
     steps: [], index: 0, srState: { logLength: 0 },
     censusStore, censusedUrls, captchaCompat,
+    auditStore, auditedUrls,
     fullFrames: [], restPng,
     get pendingCensus() { return pendingCensus; },
+    get pendingAudit() { return pendingAudit; },
   };
 
   // Serial dispatch queue: requests run one at a time in arrival order. The

@@ -45,6 +45,36 @@ export function serveFixtureHttp(name) {
   });
 }
 
+// Serves lazy-image.html plus its /img.png — a solid-red 1px PNG delivered
+// after `delayMs`, so the image genuinely cannot be painted in the same
+// instant its IntersectionObserver fires (the fixture's whole point: only a
+// crop pipeline that scrolls lazy regions into view AND waits for their
+// loads captures the real pixels). Caller must call close() when done.
+const RED_1PX_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWM4w8DwHwAENAHMwWwIZQAAAABJRU5ErkJggg==',
+  'base64',
+);
+export function serveLazyImageFixture(delayMs = 500) {
+  const html = fs.readFileSync(path.join(FIXTURES_DIR, 'lazy-image.html'), 'utf8');
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.url.startsWith('/img.png')) {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'image/png' });
+          res.end(RED_1PX_PNG);
+        }, delayMs);
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(html);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      resolve({ origin, url: origin + '/', close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
 // Serves a CDN/WAF-style error page: a real HTML body (so navigation succeeds
 // and there is something to crawl) behind a non-2xx status. Mirrors what
 // CloudFront returns when it blocks headless Chromium -- the case where the
@@ -227,9 +257,15 @@ function readOutputs(outDir, viewport) {
   const findings = JSON.parse(fs.readFileSync(path.join(vpDir, 'deterministic-findings.json'), 'utf8')).findings;
   const censusPath = path.join(vpDir, 'screen-reader-census.json');
   const census = fs.existsSync(censusPath) ? JSON.parse(fs.readFileSync(censusPath, 'utf8')) : null;
+  const pageAuditPath = path.join(vpDir, 'page-audit.json');
+  const pageAudit = fs.existsSync(pageAuditPath) ? JSON.parse(fs.readFileSync(pageAuditPath, 'utf8')) : null;
   const screenshotsDir = path.join(vpDir, 'screenshots');
-  const screenshotCount = fs.existsSync(screenshotsDir) ? fs.readdirSync(screenshotsDir).length : 0;
-  return { vpDir, trace, findings, census, screenshotCount };
+  const shots = fs.existsSync(screenshotsDir) ? fs.readdirSync(screenshotsDir) : [];
+  // step_*.png come from the keyboard persona's per-step focus pipeline;
+  // audit_*.png are the page audit's image-evidence crops (any persona).
+  const screenshotCount = shots.filter((f) => f.startsWith('step_')).length;
+  const auditScreenshotCount = shots.filter((f) => f.startsWith('audit_')).length;
+  return { vpDir, trace, findings, census, pageAudit, screenshotCount, auditScreenshotCount };
 }
 
 // Runs the batch (blind Tab-crawl) mode to completion and returns parsed output.

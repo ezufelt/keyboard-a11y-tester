@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: non-decorative CSS background image (F3 / 1.1.1)</title>
+<style>
+  a:focus, button:focus { outline: 3px solid #06c; }
+  .bg-icon {
+    display: inline-block; width: 24px; height: 24px;
+    background-image: url('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7');
+    background-size: cover;
+  }
+  #icon-pseudo { display: inline-block; }
+  #icon-pseudo::before {
+    content: ''; display: inline-block; width: 20px; height: 20px;
+    background-image: url('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7');
+    background-size: cover;
+  }
+  #icon-content { display: inline-block; width: 20px; height: 20px; }
+  #icon-content::after {
+    content: url('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7');
+  }
+  .texture {
+    background-image: url('data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==');
+    background-repeat: repeat;
+    padding: 8px;
+  }
+  .grad { background-image: linear-gradient(#eee, #ddd); padding: 8px; }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Background image fixture</h1>
+
+    <!-- FAILS (F3 -> 1.1.1): icon-only link whose entire meaning is a CSS
+         background image; no text, no accessible name. -->
+    <a id="icon-search" class="bg-icon" href="#search"></a>
+
+    <!-- FAILS (F3 -> 1.1.1): same defect, but the glyph lives entirely on a
+         ::before pseudo-element — the element itself carries no styles. -->
+    <a id="icon-pseudo" href="#filter"></a>
+
+    <!-- FAILS (F3 -> 1.1.1): third variant — the image arrives via
+         content: url(...) on ::after rather than background-image. -->
+    <a id="icon-content" href="#sort"></a>
+
+    <!-- OK: identical pattern, but a text alternative exists (aria-label). -->
+    <a id="icon-cart" class="bg-icon" href="#cart" aria-label="Shopping cart"></a>
+
+    <!-- FAILS (F39 -> 1.1.1): the link's only content is an image explicitly
+         marked decorative (alt=""), leaving the control nameless. -->
+    <a id="logo-link" href="/"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7" width="24" height="24" alt=""></a>
+
+    <!-- OK: the image names its link (real alt text). -->
+    <a id="named-img-link" href="/about"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7" width="24" height="24" alt="About us"></a>
+
+    <!-- OK: aria-hidden icon svg inside a NAMED button — the canonical
+         icon-button pattern; the suppression is correct here. -->
+    <button id="icon-btn" aria-label="Close dialog"><svg aria-hidden="true" viewBox="0 0 10 10" width="10" height="10"><path d="M0 0L10 10M10 0L0 10" stroke="black"/></svg></button>
+
+    <!-- Data only: suppressed image with no interactive context — listed in
+         suppressed_images for the AI layer, never a deterministic finding. -->
+    <img id="spacer" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" width="16" height="16" alt="">
+
+    <!-- OK: decorative repeated texture behind real text; must appear in the
+         page-audit background_images data but never as a finding. -->
+    <section id="texture-section" class="texture">
+      <h2>Texture section</h2>
+      <p>Readable text over a decorative background texture.</p>
+    </section>
+
+    <!-- OK: pure gradient, no url() — must not even be censused. -->
+    <div id="grad" class="grad">Gradient background</div>
+
+    <!-- Data only: standalone unnamed inline svg (no interactive context) —
+         censused with reason "unnamed-svg", never a deterministic finding. -->
+    <svg id="brand-svg" viewBox="0 0 20 20" width="20" height="20"><circle cx="10" cy="10" r="8" fill="#06c"/></svg>
+
+    <!-- Data only, BELOW the fold (desktop viewport is 800px tall): its
+         evidence crop must come from a fullPage frame, not a viewport-only
+         one — a viewport-clamped crop collapses to a sliver. -->
+    <div id="deep-banner" class="bg-icon" style="display: block; margin-top: 1200px;"></div>
+  </main>
+</body>
+</html>

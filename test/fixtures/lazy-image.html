@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: lazy-loaded image below the fold</title>
+<style>
+  a:focus, button:focus { outline: 3px solid #06c; }
+  #lazy-img { width: 60px; height: 60px; display: block; }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Lazy image fixture</h1>
+    <button id="ok">A real button</button>
+    <div style="height: 1600px"></div>
+    <!-- IntersectionObserver-gated, below the fold, NOT keyboard-focusable
+         (a link here would let the Tab crawl scroll it into view and load it
+         early). The real pixels arrive over the network with a server-side
+         delay — the shape of every lazy-loading carousel/logo strip in the
+         field. alt="" makes it a suppressed_images entry; this fixture
+         exists for the CROP: its evidence screenshot must contain the real
+         (solid red) image, which requires the crop pipeline to scroll lazy
+         regions into view and wait for their loads before capturing. -->
+    <img id="lazy-img" alt="" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=">
+  </main>
+  <script>
+    var img = document.getElementById('lazy-img');
+    new IntersectionObserver(function (entries, obs) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) { img.src = '/img.png'; obs.disconnect(); }
+      });
+    }).observe(img);
+  </script>
+</body>
+</html>
