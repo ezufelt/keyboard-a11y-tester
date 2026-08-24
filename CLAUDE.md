@@ -69,13 +69,30 @@ structural census (`screen-reader-census.json`).
 `focus_visible` (2.4.7 AA presence) and `focus_appearance` (2.4.13 AAA strength) per step.
 
 **Deterministic findings**: `deriveFindingsKeyboard()`, `deriveFindingsScreenReader()`,
-`deriveAllFindings()`, `deriveCrossViewportFindings()` implement the machine-decidable WCAG checks
-(keyboard persona: 2.1.2, 2.4.1, 2.4.3, 2.4.7, 2.4.13, 1.4.1, 3.2.1, 3.3.2, 4.1.2; screen-reader
-persona: 1.1.1, 1.3.1, 4.1.2, 4.1.3). Full mapping in `docs/interface.md`.
+`deriveFindingsPageAudit()`, `deriveAllFindings()`, `deriveCrossViewportFindings()` implement the
+machine-decidable WCAG checks (keyboard persona: 2.1.1, 2.1.2, 2.4.1, 2.4.3, 2.4.7, 2.4.13, 1.4.1,
+3.2.1, 3.3.2, 4.1.2; screen-reader persona: 1.1.1, 1.3.1, 4.1.2, 4.1.3). Full mapping in
+`docs/interface.md`.
+
+**Page audit** (shared instrumentation, once per URL — not a third persona): `runPageAudit()`
+sweeps the whole DOM through CDP `Runtime.evaluate` with `includeCommandLineAPI: true` — the flag
+that exposes Chrome's console-only `getEventListeners()`, the only way to see
+`addEventListener`-attached handlers. Produces `page-audit.json` (`background_images` — element
+and `::before`/`::after` `url()` images; `suppressed_images` — `alt=""`/`role=presentation`/
+`aria-hidden`/unnamed-svg images the AX tree silently drops; `interactive_candidates`;
+`roles_missing_required_state`); each backed check files under an existing profile by what it
+breaks — function → keyboard (2.1.1 mouse-only control), semantics/perception → screen-reader
+(4.1.2 missing role, 4.1.2 missing required state, 1.1.1/F3 background-image-only control,
+1.1.1/F39 suppressed-image-only control). The final page is re-audited at end of run/`finish`
+(hydration attaches listeners after `load`) and its sizeable image entries get evidence crops
+(`screenshots/audit_NNN.png`, via `captureAuditCrops()`) so the AI layer can judge
+decorative-vs-meaningful from actual pixels — written for every persona (the screen-reader
+persona skips only the per-step `step_*.png` focus pipeline).
 
 **Output**: written per run to `${TMPDIR}/keyboard-a11y-tester/<site-or-case-id>/...`
-(`trace.json`, `deterministic-findings.json`, `screen-reader-census.json`, `run-summary.json`,
-`cross-viewport-findings.json`, `screenshots/step_NNNN.png`) — **never into the repo**.
+(`trace.json`, `deterministic-findings.json`, `screen-reader-census.json`, `page-audit.json`,
+`run-summary.json`, `cross-viewport-findings.json`, `screenshots/step_NNNN.png`) — **never into
+the repo**.
 
 **Live-session control channel**: `serve` binds a Unix socket (Windows: a named pipe) that
 `observe`/`step`/`finish`/`stop` connect to; each derives the path independently from the session

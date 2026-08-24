@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: click handler attached after load (hydration)</title>
+<style>
+  a.skip { position: absolute; left: -9999px; }
+  a.skip:focus { left: 8px; top: 8px; outline: 3px solid #06c; }
+  button:focus, a:focus { outline: 3px solid #06c; }
+  #late-div { cursor: pointer; }
+</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to main content</a>
+  <main id="main">
+    <h1>Late handler fixture</h1>
+    <!-- At load time this div has NO listener, so the load-time page audit
+         sees nothing. The first keydown (the session's first Tab) attaches
+         the click handler — hydration-style — so only the re-audit that
+         `finish` runs can catch it. -->
+    <div id="late-div">Open menu</div>
+    <button id="ok">A real button</button>
+  </main>
+  <script>
+    document.addEventListener('keydown', function once() {
+      document.removeEventListener('keydown', once);
+      document.getElementById('late-div').addEventListener('click', function () {});
+    });
+  </script>
+</body>
+</html>

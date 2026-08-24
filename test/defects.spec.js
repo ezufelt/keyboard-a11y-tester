@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
-import { runBatch, fixtureUrl, tmpOutDir, serveCrossOriginIframeFixture } from './helpers.js';
+import path from 'node:path';
+import { PNG } from 'pngjs';
+import { runBatch, fixtureUrl, tmpOutDir, serveCrossOriginIframeFixture, serveLazyImageFixture } from './helpers.js';
 
 test.describe('seeded-defect fixtures', () => {
   test('mixed-defects.html: keyboard + screen-reader findings detected', async () => {
@@ -89,6 +91,173 @@ test.describe('seeded-defect fixtures', () => {
     try {
       const { findings } = await runBatch({ url: fixtureUrl('focusable-hidden-from-at.html'), persona: 'screen-reader', outDir, maxSteps: 10 });
       expect(findings.some((x) => x.id.startsWith('sr-focusable-not-exposed'))).toBe(true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('bg-image-meaning.html: 1.1.1 image-only-control checks fire for the seeded defects only', async () => {
+    const outDir = tmpOutDir();
+    try {
+      const { findings, pageAudit, vpDir } = await runBatch({ url: fixtureUrl('bg-image-meaning.html'), persona: 'screen-reader', outDir, maxSteps: 10 });
+
+      // F3 — meaning conveyed only by a CSS background image, including one
+      // whose glyph lives entirely on a ::before pseudo-element.
+      const f3 = findings.find((x) => x.id.startsWith('bg-image-only-control'));
+      expect(f3, JSON.stringify(findings, null, 2)).toBeTruthy();
+      expect(f3.wcag).toBe('1.1.1');
+      expect(f3.persona).toBe('screen-reader'); // perception/semantics — screen-reader profile
+      // The aria-labelled twin and the decorative texture behind real text
+      // must not fire. All three delivery vectors do: element background,
+      // ::before background, content:url() on ::after.
+      expect([...f3.evidence].sort()).toEqual(['#icon-content', '#icon-pseudo', '#icon-search']);
+
+      // F39 — the control's only content is an image explicitly suppressed
+      // from assistive tech (alt="").
+      const f39 = findings.find((x) => x.id.startsWith('suppressed-image-only-control'));
+      expect(f39, JSON.stringify(findings, null, 2)).toBeTruthy();
+      expect(f39.wcag).toBe('1.1.1');
+      expect(f39.evidence).toEqual(['#logo-link']);
+
+      // FP guards: the properly-named patterns never back a finding.
+      const allEvidence = findings.flatMap((x) => x.evidence);
+      expect(allEvidence).not.toContain('#named-img-link');
+      expect(allEvidence).not.toContain('#icon-btn');
+      expect(allEvidence).not.toContain('#spacer');
+
+      // The audit DATA still lists every url() background (the AI layer's
+      // decorative-vs-meaningful judgment input) — but never pure gradients.
+      const page = Object.values(pageAudit.pages)[0];
+      const bgSelectors = page.background_images.map((b) => b.selector);
+      expect(bgSelectors).toContain('#texture-section');
+      expect(bgSelectors).toContain('#icon-cart');
+      expect(bgSelectors).not.toContain('#grad');
+      // Suppressed images are censused with their reason even when they back
+      // no finding (spacer: no interactive context; icon-btn svg: named button).
+      const spacer = page.suppressed_images.find((s) => s.selector === '#spacer');
+      expect(spacer?.reason).toBe('empty-alt');
+      expect(page.suppressed_images.some((s) => s.reason === 'aria-hidden' && s.tag === 'svg')).toBe(true);
+      expect(page.suppressed_images.find((s) => s.selector === '#brand-svg')?.reason).toBe('unnamed-svg');
+      // Every sizeable image entry got an evidence crop the AI layer can look at.
+      const withShots = [...page.background_images, ...page.suppressed_images].filter((e) => e.screenshot);
+      expect(withShots.length).toBeGreaterThan(0);
+      for (const e of withShots) {
+        expect(fs.existsSync(path.join(vpDir, e.screenshot))).toBe(true);
+      }
+      // Below-the-fold guard: the crop must come from a fullPage frame. A
+      // viewport-only frame would clamp this 24px-tall region (y ≈ 1300 on an
+      // 800px-tall viewport) into a sliver/1x1 stub — assert real dimensions
+      // straight from the PNG's IHDR header.
+      const deep = page.background_images.find((b) => b.selector === '#deep-banner');
+      expect(deep?.screenshot, JSON.stringify(page.background_images, null, 2)).toBeTruthy();
+      const ihdr = fs.readFileSync(path.join(vpDir, deep.screenshot));
+      expect(ihdr.readUInt32BE(16)).toBeGreaterThanOrEqual(24); // width
+      expect(ihdr.readUInt32BE(20)).toBeGreaterThanOrEqual(24); // height
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('fake-interactive.html: handler-without-semantics checks fire for the seeded elements only', async () => {
+    const outDir = tmpOutDir();
+    try {
+      const { findings, pageAudit } = await runBatch({ url: fixtureUrl('fake-interactive.html'), persona: 'all', outDir, maxSteps: 15 });
+
+      // 2.1.1 — click-handled but neither focusable nor semantically
+      // interactive: a FUNCTION failure, so it files under the keyboard profile.
+      const mouseOnly = findings.find((x) => x.id.startsWith('handler-not-focusable'));
+      expect(mouseOnly, JSON.stringify(findings, null, 2)).toBeTruthy();
+      expect(mouseOnly.wcag).toBe('2.1.1');
+      expect(mouseOnly.persona).toBe('keyboard');
+      expect([...mouseOnly.evidence].sort()).toEqual(['#fake-div', '#inline-div']);
+
+      // 4.1.2 — focusable and click-handled but generic role: reachable, so a
+      // SEMANTICS failure — screen-reader profile.
+      const missingRole = findings.find((x) => x.id.startsWith('handler-missing-role'));
+      expect(missingRole, JSON.stringify(findings, null, 2)).toBeTruthy();
+      expect(missingRole.persona).toBe('screen-reader');
+      expect(missingRole.evidence).toEqual(['#focus-span']);
+
+      // 4.1.2 — explicit role missing its ARIA-required state (semantics —
+      // screen-reader profile). All three variants: aria-checked,
+      // aria-expanded, aria-valuenow.
+      const missingState = findings.find((x) => x.id.startsWith('role-missing-required-state'));
+      expect(missingState, JSON.stringify(findings, null, 2)).toBeTruthy();
+      expect(missingState.persona).toBe('screen-reader');
+      expect([...missingState.evidence].sort()).toEqual(['#bad-check', '#bad-combo', '#bad-slider']);
+
+      // FP guards: the native button, the delegation container, the
+      // key-listener-only scope, the native input with role=switch (state
+      // carried natively), the uncorroborated listener, the aria-hidden
+      // widget, and the cursor-only lead must not back any finding.
+      const allEvidence = findings.flatMap((x) => x.evidence);
+      for (const guard of ['#real-btn', '#card-list', '#shortcut-scope', '#native-switch',
+        '#quiet-div', '#hidden-widget', '#react-card']) {
+        expect(allEvidence, `${guard} must not back any finding`).not.toContain(guard);
+      }
+
+      // ...but the excluded suspects stay visible as audit DATA, with the
+      // signals the AI layer needs to probe them.
+      const page = Object.values(pageAudit.pages)[0];
+      const cand = (sel) => page.interactive_candidates.find((c) => c.selector === sel);
+      expect(cand('#quiet-div')?.pointer_listener).toBe(true);     // listener, no corroboration
+      expect(cand('#quiet-div')?.cursor_pointer).toBe(false);
+      expect(cand('#hidden-widget')?.aria_hidden).toBe(true);      // excluded by aria-hidden
+      expect(cand('#react-card')?.pointer_listener).toBe(false);   // framework-delegation shape
+      expect(cand('#react-card')?.cursor_pointer).toBe(true);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('lazy-image.html: audit evidence crop contains the lazily-loaded pixels, not the unloaded placeholder', async () => {
+    // Field-observed limitation: a below-fold image whose pixels only load
+    // when its region nears the viewport (IntersectionObserver swapper here;
+    // native loading="lazy" in the wild) produced a blank evidence crop —
+    // the fullPage capture never scrolls, so the loader never fired. Served
+    // over HTTP with a delayed image response (the fixture is deliberately
+    // not keyboard-focusable and its real pixels arrive over the network:
+    // a same-instant data-URI swap or a Tab-scroll would load it by
+    // accident and pass vacuously). The crop must show the REAL image
+    // (solid red), or the AI layer is judging decorative-vs-meaningful
+    // against an empty rectangle.
+    const outDir = tmpOutDir();
+    const fixture = await serveLazyImageFixture(500);
+    try {
+      const { pageAudit, vpDir } = await runBatch({ url: fixture.url, persona: 'screen-reader', outDir, maxSteps: 5 });
+      const page = Object.values(pageAudit.pages)[0];
+      const entry = page.suppressed_images.find((s) => s.selector === '#lazy-img');
+      expect(entry?.screenshot, JSON.stringify(page.suppressed_images, null, 2)).toBeTruthy();
+      const png = PNG.sync.read(fs.readFileSync(path.join(vpDir, entry.screenshot)));
+      let red = 0;
+      for (let i = 0; i < png.data.length; i += 4) {
+        if (png.data[i] > 150 && png.data[i + 1] < 80 && png.data[i + 2] < 80) red++;
+      }
+      // The 60x60 image dominates its 4px-padded crop (~68x68): well over
+      // half the pixels are solid #cc0000 once actually loaded; the white
+      // placeholder yields ~0.
+      expect(red / (png.width * png.height), `red fraction of ${entry.screenshot}`).toBeGreaterThan(0.5);
+    } finally {
+      await fixture.close();
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('fake-interactive.html: page-audit findings gate by profile (function → keyboard, semantics → screen-reader)', async () => {
+    const outDir = tmpOutDir();
+    try {
+      // Keyboard-only: the function check fires, the semantics checks stay quiet.
+      const kb = await runBatch({ url: fixtureUrl('fake-interactive.html'), persona: 'keyboard', outDir, maxSteps: 15 });
+      expect(kb.findings.some((x) => x.id.startsWith('handler-not-focusable'))).toBe(true);
+      expect(kb.findings.some((x) => x.id.startsWith('handler-missing-role'))).toBe(false);
+      expect(kb.findings.some((x) => x.id.startsWith('role-missing-required-state'))).toBe(false);
+      fs.rmSync(outDir, { recursive: true, force: true });
+      fs.mkdirSync(outDir);
+      // Screen-reader-only: the inverse.
+      const sr = await runBatch({ url: fixtureUrl('fake-interactive.html'), persona: 'screen-reader', outDir, maxSteps: 15 });
+      expect(sr.findings.some((x) => x.id.startsWith('handler-not-focusable'))).toBe(false);
+      expect(sr.findings.some((x) => x.id.startsWith('handler-missing-role'))).toBe(true);
+      expect(sr.findings.some((x) => x.id.startsWith('role-missing-required-state'))).toBe(true);
     } finally {
       fs.rmSync(outDir, { recursive: true, force: true });
     }

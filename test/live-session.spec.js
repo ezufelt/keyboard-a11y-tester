@@ -33,6 +33,40 @@ test('serve -> observe -> step -> finish -> stop round trip', async () => {
     expect(trace.mode).toBe('driven-live');
     expect(trace.steps.length).toBe(5);
     expect(fs.existsSync(path.join(session.sessionDir, 'screen-reader-census.json'))).toBe(true);
+    // finish also runs the page audit (interaction semantics + background
+    // images) against the final page and writes its per-URL data.
+    const audit = JSON.parse(fs.readFileSync(path.join(session.sessionDir, 'page-audit.json'), 'utf8'));
+    expect(Object.keys(audit.pages).length).toBeGreaterThan(0);
+    for (const p of Object.values(audit.pages)) {
+      expect(Array.isArray(p.interactive_candidates)).toBe(true);
+      expect(Array.isArray(p.background_images)).toBe(true);
+    }
+  } finally {
+    if (session) await stopServe(session.sessionDir, session.proc);
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+// The page audit runs once per URL on 'load', but real apps attach listeners
+// during hydration, after 'load'. `finish` therefore re-audits the final page,
+// superseding the load-time entry. This fixture attaches its click handler on
+// the session's FIRST keydown — strictly after the load-time audit — so the
+// finding below exists only if the finish-time re-audit actually happened.
+test('finish re-audits the page: a click handler attached after load still yields the 2.1.1 finding', async () => {
+  const outDir = tmpOutDir();
+  let session;
+  try {
+    session = await startServe({ url: fixtureUrl('late-handler.html'), persona: 'keyboard', viewport: 'desktop', outDir });
+    await runStep(session.sessionDir, { press: 'Tab' }); // keydown → handler attaches
+    await runStep(session.sessionDir, { press: 'Tab' });
+    await runFinish(session.sessionDir);
+
+    const findings = JSON.parse(
+      fs.readFileSync(path.join(session.sessionDir, 'deterministic-findings.json'), 'utf8')
+    ).findings;
+    const f = findings.find((x) => x.id.startsWith('handler-not-focusable'));
+    expect(f, JSON.stringify(findings, null, 2)).toBeTruthy();
+    expect(f.evidence).toEqual(['#late-div']);
   } finally {
     if (session) await stopServe(session.sessionDir, session.proc);
     fs.rmSync(outDir, { recursive: true, force: true });

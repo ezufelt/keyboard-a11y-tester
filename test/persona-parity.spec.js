@@ -18,7 +18,7 @@ test.describe('--persona parity/contract', () => {
     }
   });
 
-  test('--persona screen-reader: no pixel work, census present, all findings tagged screen-reader', async () => {
+  test('--persona screen-reader: no per-step pixel work, census present, all findings tagged screen-reader', async () => {
     const outDir = tmpOutDir();
     try {
       const { trace, census, screenshotCount, findings } = await runBatch({
@@ -26,6 +26,10 @@ test.describe('--persona parity/contract', () => {
       });
       expect(census).not.toBeNull();
       expect(trace.personas).toEqual(['screen-reader']);
+      // No step_*.png: the keyboard persona's per-step focus-diff pipeline is
+      // off. The page audit's audit_*.png image-evidence crops are separate
+      // (they serve this persona's decorative-vs-meaningful judgment) and may
+      // exist under any persona.
       expect(screenshotCount).toBe(0);
       expect(findings.every((f) => f.persona === 'screen-reader')).toBe(true);
       expect(trace.steps.some((s) => s.sr_announcement !== null)).toBe(true);

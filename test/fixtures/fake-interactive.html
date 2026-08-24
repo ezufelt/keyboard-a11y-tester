@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture: interactive-seeming elements without semantics</title>
+<style>
+  a.skip { position: absolute; left: -9999px; }
+  a.skip:focus { left: 8px; top: 8px; outline: 3px solid #06c; }
+  button:focus, a:focus, input:focus, [tabindex]:focus { outline: 3px solid #06c; }
+  #fake-div, #hidden-widget, #react-card { cursor: pointer; }
+</style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to main content</a>
+  <main id="main">
+    <h1>Fake interactive fixture</h1>
+
+    <!-- FAILS 2.1.1: click listener + cursor:pointer, but a plain div — not
+         focusable, no role. Mouse-only. -->
+    <div id="fake-div">Open details</div>
+
+    <!-- FAILS 2.1.1: inline onclick, no cursor styling — the inline handler
+         attribute alone is the "meant to be clicked" signal. -->
+    <div id="inline-div" onclick="void 0">Dismiss</div>
+
+    <!-- FAILS 4.1.2 (missing role): focusable and click-handled, but exposed
+         as generic text. -->
+    <span id="focus-span" tabindex="0">Toggle panel</span>
+
+    <!-- FAILS 4.1.2 (missing required state): role=checkbox with no
+         aria-checked. Not an interactive_candidate (it HAS a role). -->
+    <div id="bad-check" role="checkbox" tabindex="0">Subscribe to updates</div>
+
+    <!-- FAILS 4.1.2 (missing required state): the other required-state
+         variants — combobox without aria-expanded, slider without
+         aria-valuenow. -->
+    <div id="bad-combo" role="combobox" tabindex="0">Choose a fruit</div>
+    <div id="bad-slider" role="slider" tabindex="0">Volume</div>
+
+    <!-- FP guards: none of these may back a page-audit finding. -->
+    <button id="real-btn">Real button</button>
+    <div id="card-list"><a href="#one">Card one</a> <a href="#two">Card two</a></div>
+    <div id="shortcut-scope"><p>Keyboard shortcut scope (key listener only)</p></div>
+    <!-- Native input carries its state natively — role=switch without
+         aria-checked must NOT fire the required-state check here. -->
+    <label>Notifications <input id="native-switch" type="checkbox" role="switch"></label>
+    <!-- Pointer listener with NO corroborating signal (no cursor styling, no
+         inline onclick) — an analytics-style listener: audit DATA only. -->
+    <div id="quiet-div">Quietly tracked</div>
+    <!-- aria-hidden clickable widget: audit DATA only, excluded from findings. -->
+    <div id="hidden-widget" aria-hidden="true">Hidden widget</div>
+    <!-- cursor:pointer with no listener at all — the shape of a framework-
+         delegated (React-style) handler: audit DATA lead only. -->
+    <div id="react-card">Framework card</div>
+  </main>
+  <script>
+    document.getElementById('fake-div').addEventListener('click', function () {});
+    document.getElementById('focus-span').addEventListener('click', function () {});
+    document.getElementById('bad-check').addEventListener('click', function () {});
+    document.getElementById('real-btn').addEventListener('click', function () {});   // native control
+    document.getElementById('card-list').addEventListener('click', function () {});  // event delegation
+    document.getElementById('shortcut-scope').addEventListener('keydown', function () {});
+    document.getElementById('quiet-div').addEventListener('click', function () {});
+    document.getElementById('hidden-widget').addEventListener('click', function () {});
+    document.body.addEventListener('click', function () {});                          // global delegation
+  </script>
+</body>
+</html>

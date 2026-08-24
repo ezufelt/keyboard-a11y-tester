@@ -7,6 +7,53 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Per-URL **page audit** (`page-audit.json`, written for every persona in both batch and live
+  mode): a whole-DOM sweep using Chrome's console-only `getEventListeners()` (via CDP
+  `Runtime.evaluate` with `includeCommandLineAPI`) plus a computed-style pass. Yields three
+  data sections — `background_images` (every `url()` background with text/name/interactivity
+  context), `interactive_candidates` (elements with pointer handlers, inline `onclick`, or
+  locally-set `cursor: pointer` but no interactive semantics), and
+  `roles_missing_required_state` — and four new deterministic checks. The audit is shared
+  instrumentation, not a new persona: each check files under an existing profile by what it
+  breaks (function → keyboard, semantics/perception → screen-reader):
+  - **2.1.1** (keyboard) click/pointer-handled element that is neither keyboard-focusable nor
+    semantically interactive (mouse-only control), corroborated by `cursor: pointer` or an
+    inline `onclick`.
+  - **4.1.2** (screen-reader) keyboard-focusable, click-handled element exposing no
+    interactive role — reachable, but announced as generic text.
+  - **4.1.2** (screen-reader) explicit ARIA role missing its required state attribute
+    (`checkbox` without `aria-checked`, `combobox` without `aria-expanded`,
+    `slider`/`scrollbar` without `aria-valuenow`).
+  - **1.1.1** (screen-reader, WCAG failure F3) interactive control whose only visual content
+    is a CSS background image — element-level or `::before`/`::after` — and whose accessible
+    name is empty; meaning conveyed visually only.
+  - **1.1.1** (screen-reader, WCAG failure F39 family) interactive control whose only content
+    is an image explicitly suppressed from assistive tech (`alt=""`, `role="presentation"`,
+    `aria-hidden`, unnamed svg) — decorative cannot be right for a nameless control's sole
+    content.
+- The audit censuses **suppressed images** (`alt=""` / `role=presentation` / `aria-hidden` /
+  unnamed inline svg — the images the accessibility tree silently drops, which no census
+  could previously see) and, on the final audited page, writes **evidence crops**
+  (`screenshots/audit_NNN.png`, referenced from each sizeable image entry's `screenshot`
+  field) so the AI layer can judge decorative-vs-meaningful from actual pixels — for both
+  `background_images` and `suppressed_images`, under every persona (the screen-reader
+  persona still skips the per-step `step_*.png` focus-pixel pipeline). Before capturing,
+  the scroll position is swept down the page and restored to fire lazy loaders (native
+  `loading="lazy"`, IntersectionObserver swappers) and in-flight image fetches get a
+  bounded grace period, so below-fold lazy images crop as their real pixels rather than a
+  blank placeholder.
+  The final page is re-audited at end of run/`finish`, since frameworks attach listeners
+  after `load`. Everything the deterministic subset doesn't flag remains in `page-audit.json`
+  as lead material for the AI layer (decorative-vs-meaningful background images,
+  framework-delegated handlers that only surface via the cursor signal).
+
+### Fixed
+- The census and page-audit timeout guards now clear their losing `setTimeout`: the
+  still-scheduled 20s census timer used to hold the Node event loop open after every
+  screen-reader batch run had otherwise finished, adding up to 20s of idle wall-clock to the
+  process exit.
+
 ## [1.1.0] - 2026-08-08
 
 ### Added
