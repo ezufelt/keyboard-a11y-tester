@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-24
+
 ### Added
 - Per-URL **page audit** (`page-audit.json`, written for every persona in both batch and live
   mode): a whole-DOM sweep using Chrome's console-only `getEventListeners()` (via CDP
@@ -301,7 +303,9 @@ outside that promise.
 - Saved-scenario support (`*.test.yaml`, see `test-cases/TEMPLATE.test.yaml`) alongside
   ad-hoc `--url` runs.
 
-[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/ezufelt/keyboard-a11y-tester/compare/1.2.0...HEAD
+[1.2.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/1.1.0...1.2.0
+[1.1.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/1.0.0...1.1.0
 [1.0.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.8.0...1.0.0
 [0.8.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/ezufelt/keyboard-a11y-tester/compare/0.6.0...0.7.0

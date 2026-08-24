@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "keyboard-a11y-tester",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Drive a real browser keyboard-only to test whether a keyboard-only user AND a screen-reader user can complete a task, and report evidence-linked WCAG findings for both personas.",
   "author": {
     "name": "Everett Zufelt"
