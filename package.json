@@ -42,14 +42,14 @@
   "dependencies": {
     "@guidepup/virtual-screen-reader": "^0.32.1",
     "pixelmatch": "^7.2.0",
-    "playwright": "^1.62.1",
+    "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
     "yaml": "^2.5.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "^1.62.1",
-    "eslint": "^10.9.1",
+    "@playwright/test": "^1.63.0",
+    "eslint": "^10.10.0",
     "fast-check": "^4.9.0",
     "globals": "^17.12.0"
   }
