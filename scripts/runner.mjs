@@ -1076,6 +1076,17 @@ function cropPng(png, box) {
   return out;
 }
 
+// Per-pixel colour-difference threshold for the focus diff, as pixelmatch's
+// OKLab HyAB distance (0..1, where 1 is black vs white). Deliberately well
+// below pixelmatch's 0.1 default: 2.4.7 is presence-only, so what matters here
+// is whether a sighted user could perceive *any* change, and a hue-only swap
+// between two near-isoluminant pastels (e.g. #f8d7da -> #d1e7ff, plainly
+// visible, HyAB ~0.09) sits under that default and would read as no indicator
+// at all. 0.02 is about the just-noticeable difference in OKLab; anti-aliasing
+// noise is excluded separately by pixelmatch's own AA detection (includeAA
+// stays off).
+const PIXEL_DIFF_THRESHOLD = 0.02;
+
 // Count of pixels that differ between two same-region crops.
 function changedPixels(focusedPng, baselinePng, region) {
   const a = cropPng(focusedPng, region);
@@ -1086,7 +1097,7 @@ function changedPixels(focusedPng, baselinePng, region) {
   const A = w === a.width && h === a.height ? a : cropPng(a, { x: 0, y: 0, width: w, height: h });
   const B = w === b.width && h === b.height ? b : cropPng(b, { x: 0, y: 0, width: w, height: h });
   const diff = new PNG({ width: w, height: h });
-  return { changed: pixelmatch(A.data, B.data, diff.data, w, h, { threshold: 0.1 }), area: w * h };
+  return { changed: pixelmatch(A.data, B.data, diff.data, w, h, { threshold: PIXEL_DIFF_THRESHOLD }), area: w * h };
 }
 
 // Ring presence is measured over thin annular slices at increasing offset from

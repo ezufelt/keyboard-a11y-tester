@@ -10,11 +10,11 @@
 
 | Package | Version | Why |
 |---------|---------|-----|
-| `playwright` | ^1.48.0 | Drives full Chromium keyboard-only and reads the CDP accessibility tree |
+| `playwright` | ^1.63.0 | Drives full Chromium keyboard-only and reads the CDP accessibility tree |
 | `pngjs` | ^7.0.0 | Decodes the per-step screenshots for pixel comparison |
-| `pixelmatch` | ^7.2.0 | Diffs focused vs. baseline frames to detect focus-indicator pixel changes |
-| `yaml` | ^2.5.0 | Parses saved scenario `*.test.yaml` files |
-| `@guidepup/virtual-screen-reader` | ^0.32.1 | Builds an ARIA/ACCNAME accessibility tree over the live page and emulates screen-reader announcements + live-region monitoring, for the screen-reader persona |
+| `pixelmatch` | ^8.0.0 | Diffs focused vs. baseline frames to detect focus-indicator pixel changes |
+| `yaml` | ^2.9.1 | Parses saved scenario `*.test.yaml` files |
+| `@guidepup/virtual-screen-reader` | ^0.33.0 | Builds an ARIA/ACCNAME accessibility tree over the live page and emulates screen-reader announcements + live-region monitoring, for the screen-reader persona |
 
 There are **no runtime dependencies beyond these five** and no build step — the runner is
 plain `.mjs` executed directly by Node (the screen-reader library ships a pre-bundled
